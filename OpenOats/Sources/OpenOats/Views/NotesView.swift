@@ -20,7 +20,9 @@ struct NotesView: View {
         }
         .task {
             await coordinator.loadHistory()
-            if let last = coordinator.lastEndedSession {
+            if let requested = coordinator.consumeRequestedSessionSelection() {
+                selectedSessionID = requested
+            } else if let last = coordinator.lastEndedSession {
                 selectedSessionID = last.id
             }
         }
@@ -32,6 +34,11 @@ struct NotesView: View {
                     await coordinator.loadHistory()
                     selectedSessionID = last.id
                 }
+            }
+        }
+        .onChange(of: coordinator.requestedSessionSelectionID) {
+            if let requested = coordinator.consumeRequestedSessionSelection() {
+                selectedSessionID = requested
             }
         }
         .onChange(of: coordinator.sessionHistory.count) {
