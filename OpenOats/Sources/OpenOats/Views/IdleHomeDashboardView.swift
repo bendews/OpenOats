@@ -109,10 +109,13 @@ struct IdleHomeDashboardView: View {
 
     private var upcomingMeetingsCard: some View {
         let groups = UpcomingCalendarGrouping.groups(for: events)
+        let shouldShowCalendarTitle = UpcomingEventSelection.distinctCalendarCount(in: events) > 1
+
         return VStack(alignment: .leading, spacing: 14) {
             ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                 ComingUpDayGroupView(
                     group: group,
+                    showCalendarTitle: shouldShowCalendarTitle,
                     onJoinEvent: joinMeeting(for:),
                     onOpenRelatedNotes: openRelatedNotes(for:)
                 )
@@ -151,15 +154,21 @@ struct IdleHomeDashboardView: View {
         let upcomingEvents = manager.upcomingEvents(
             from: now,
             within: 7 * 24 * 60 * 60,
-            limit: 6
+            limit: 24
         )
 
         var combined: [CalendarEvent] = []
         if let currentEvent {
             combined.append(currentEvent)
         }
-        combined.append(contentsOf: upcomingEvents.filter { $0.id != currentEvent?.id })
-        events = Array(combined.prefix(6))
+
+        let remainingLimit = max(0, 6 - combined.count)
+        let selectedUpcoming = UpcomingEventSelection.select(
+            from: upcomingEvents.filter { $0.id != currentEvent?.id },
+            limit: remainingLimit
+        )
+        combined.append(contentsOf: selectedUpcoming)
+        events = combined
     }
 
     private var currentAccessState: CalendarManager.AccessState {
@@ -227,6 +236,7 @@ struct IdleHomeDashboardView: View {
 
 private struct ComingUpDayGroupView: View {
     let group: UpcomingCalendarGrouping.DayGroup
+    let showCalendarTitle: Bool
     let onJoinEvent: (CalendarEvent) -> Void
     let onOpenRelatedNotes: (CalendarEvent) -> Void
 
@@ -241,6 +251,7 @@ private struct ComingUpDayGroupView: View {
                 ForEach(group.events) { event in
                     ComingUpEventRow(
                         event: event,
+                        showCalendarTitle: showCalendarTitle,
                         onJoinEvent: onJoinEvent,
                         onOpenRelatedNotes: onOpenRelatedNotes
                     )
@@ -252,6 +263,7 @@ private struct ComingUpDayGroupView: View {
 
 private struct ComingUpEventRow: View {
     let event: CalendarEvent
+    let showCalendarTitle: Bool
     let onJoinEvent: (CalendarEvent) -> Void
     let onOpenRelatedNotes: (CalendarEvent) -> Void
 
@@ -264,14 +276,14 @@ private struct ComingUpEventRow: View {
             }) {
                 HStack(alignment: .top, spacing: 10) {
                     RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.accentColor)
+                        .fill(calendarColor(for: event))
                         .frame(width: 4, height: 34)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(event.title)
                             .font(.system(size: 15, weight: .medium))
                             .lineLimit(1)
-                        Text(CalendarEventDisplay.timeRange(for: event))
+                        Text(secondaryLine(for: event))
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -317,6 +329,91 @@ private struct ComingUpEventRow: View {
                 .accessibilityIdentifier("idle.comingUp.join.\(event.id)")
             }
         }
+    }
+
+    private func secondaryLine(for event: CalendarEvent) -> String {
+        let time = CalendarEventDisplay.timeRange(for: event)
+        guard showCalendarTitle,
+              let calendarTitle = event.calendarTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !calendarTitle.isEmpty else {
+            return time
+        }
+        return "\(time)  •  \(calendarTitle)"
+    }
+
+    private func calendarColor(for event: CalendarEvent) -> Color {
+        guard let hex = event.calendarColorHex,
+              let color = CalendarColorCodec.color(from: hex) else {
+            return .accentColor
+        }
+        return color
+    }
+}
+
+extension CalendarColorCodec {
+    static func color(from hex: String) -> Color? {
+        let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count == 7, cleaned.hasPrefix("#") else { return nil }
+
+        let start = cleaned.index(after: cleaned.startIndex)
+        let hexDigits = String(cleaned[start...])
+        guard let value = Int(hexDigits, radix: 16) else { return nil }
+
+        let red = Double((value >> 16) & 0xFF) / 255
+        let green = Double((value >> 8) & 0xFF) / 255
+        let blue = Double(value & 0xFF) / 255
+        return Color(red: red, green: green, blue: blue)
+    }
+}
+
+enum UpcomingEventSelection {
+    static func select(from events: [CalendarEvent], limit: Int) -> [CalendarEvent] {
+        guard limit > 0, events.count > limit else {
+            return Array(events.prefix(limit))
+        }
+
+        let sortedEvents = events.sorted { $0.startDate < $1.startDate }
+        var selectedIDs = Set<String>()
+        var selected: [CalendarEvent] = []
+
+        for event in earliestPerCalendar(in: sortedEvents) {
+            guard selected.count < limit else { break }
+            guard selectedIDs.insert(event.id).inserted else { continue }
+            selected.append(event)
+        }
+
+        for event in sortedEvents {
+            guard selected.count < limit else { break }
+            guard selectedIDs.insert(event.id).inserted else { continue }
+            selected.append(event)
+        }
+
+        return selected.sorted { $0.startDate < $1.startDate }
+    }
+
+    static func distinctCalendarCount(in events: [CalendarEvent]) -> Int {
+        Set(events.map(calendarIdentity(for:))).count
+    }
+
+    private static func earliestPerCalendar(in events: [CalendarEvent]) -> [CalendarEvent] {
+        var firstByCalendar: [String: CalendarEvent] = [:]
+        for event in events {
+            let identity = calendarIdentity(for: event)
+            if firstByCalendar[identity] == nil {
+                firstByCalendar[identity] = event
+            }
+        }
+        return firstByCalendar.values.sorted { $0.startDate < $1.startDate }
+    }
+
+    private static func calendarIdentity(for event: CalendarEvent) -> String {
+        if let calendarID = event.calendarID, !calendarID.isEmpty {
+            return calendarID
+        }
+        if let calendarTitle = event.calendarTitle, !calendarTitle.isEmpty {
+            return "title:\(calendarTitle)"
+        }
+        return "event:\(event.id)"
     }
 }
 

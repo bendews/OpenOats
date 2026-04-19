@@ -12,6 +12,9 @@ final class SessionRepositoryTests: XCTestCase {
             title: "Customer Sync",
             startDate: Date(timeIntervalSince1970: 1_700_000_000),
             endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            calendarID: "calendar-123",
+            calendarTitle: "Customer Meetings",
+            calendarColorHex: "#3366FF",
             organizer: "Aly",
             participants: [
                 Participant(name: "Aly", email: "aly@example.com"),
@@ -145,6 +148,9 @@ final class SessionRepositoryTests: XCTestCase {
 
         let session = await repo.loadSession(id: sessionID)
         XCTAssertEqual(session.calendarEvent?.title, "Customer Sync")
+        XCTAssertEqual(session.calendarEvent?.calendarID, "calendar-123")
+        XCTAssertEqual(session.calendarEvent?.calendarTitle, "Customer Meetings")
+        XCTAssertEqual(session.calendarEvent?.calendarColorHex, "#3366FF")
         XCTAssertEqual(session.calendarEvent?.participants.count, 2)
 
         await repo.deleteSession(sessionID: sessionID)

@@ -153,12 +153,47 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
         XCTAssertNil(UpcomingMeetingActionResolver.bestSessionMatch(for: event, sessionHistory: sessions))
     }
 
-    private func makeEvent(id: String, title: String, start: Date) -> CalendarEvent {
+    func testSelectionPrefersCalendarCoverageBeforeFillingRemainingSlots() {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let events = [
+            makeEvent(id: "a1", title: "Alpha 1", start: base.addingTimeInterval(60), calendarID: "A", calendarTitle: "Work"),
+            makeEvent(id: "a2", title: "Alpha 2", start: base.addingTimeInterval(120), calendarID: "A", calendarTitle: "Work"),
+            makeEvent(id: "a3", title: "Alpha 3", start: base.addingTimeInterval(180), calendarID: "A", calendarTitle: "Work"),
+            makeEvent(id: "b1", title: "Beta 1", start: base.addingTimeInterval(240), calendarID: "B", calendarTitle: "Personal"),
+            makeEvent(id: "c1", title: "Gamma 1", start: base.addingTimeInterval(300), calendarID: "C", calendarTitle: "Side"),
+        ]
+
+        let selected = UpcomingEventSelection.select(from: events, limit: 4)
+
+        XCTAssertEqual(selected.map(\.id), ["a1", "a2", "b1", "c1"])
+    }
+
+    func testDistinctCalendarCountUsesCalendarIdentity() {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let events = [
+            makeEvent(id: "a1", title: "Alpha 1", start: base, calendarID: "A", calendarTitle: "Work"),
+            makeEvent(id: "a2", title: "Alpha 2", start: base.addingTimeInterval(60), calendarID: "A", calendarTitle: "Work"),
+            makeEvent(id: "b1", title: "Beta 1", start: base.addingTimeInterval(120), calendarID: "B", calendarTitle: "Personal"),
+        ]
+
+        XCTAssertEqual(UpcomingEventSelection.distinctCalendarCount(in: events), 2)
+    }
+
+    private func makeEvent(
+        id: String,
+        title: String,
+        start: Date,
+        calendarID: String? = nil,
+        calendarTitle: String? = nil
+    ) -> CalendarEvent {
         CalendarEvent(
             id: id,
             title: title,
             startDate: start,
             endDate: start.addingTimeInterval(30 * 60),
+            calendarID: calendarID,
+            calendarTitle: calendarTitle,
+            calendarColorHex: nil,
             organizer: nil,
             participants: [],
             isOnlineMeeting: false,

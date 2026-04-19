@@ -48,10 +48,39 @@ struct CalendarEvent: Sendable, Hashable, Codable, Identifiable {
     let title: String
     let startDate: Date
     let endDate: Date
+    let calendarID: String?
+    let calendarTitle: String?
+    let calendarColorHex: String?
     let organizer: String?
     let participants: [Participant]
     let isOnlineMeeting: Bool
     let meetingURL: URL?
+
+    init(
+        id: String,
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        calendarID: String? = nil,
+        calendarTitle: String? = nil,
+        calendarColorHex: String? = nil,
+        organizer: String?,
+        participants: [Participant],
+        isOnlineMeeting: Bool,
+        meetingURL: URL?
+    ) {
+        self.id = id
+        self.title = title
+        self.startDate = startDate
+        self.endDate = endDate
+        self.calendarID = calendarID
+        self.calendarTitle = calendarTitle
+        self.calendarColorHex = calendarColorHex
+        self.organizer = organizer
+        self.participants = participants
+        self.isOnlineMeeting = isOnlineMeeting
+        self.meetingURL = meetingURL
+    }
 }
 
 /// A meeting participant from a calendar event.

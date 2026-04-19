@@ -1,3 +1,4 @@
+import AppKit
 import EventKit
 import Foundation
 
@@ -42,6 +43,7 @@ final class CalendarManager {
     /// Returns nil if no event is found or access is not authorized.
     func currentEvent(at date: Date = Date()) -> CalendarEvent? {
         guard accessState == .authorized else { return nil }
+        let calendars = eventCalendars()
 
         // Look for events in a window: started up to 15 min ago through 15 min from now
         let windowStart = date.addingTimeInterval(-15 * 60)
@@ -50,7 +52,7 @@ final class CalendarManager {
         let predicate = store.predicateForEvents(
             withStart: windowStart,
             end: windowEnd,
-            calendars: nil
+            calendars: calendars
         )
         let events = store.events(matching: predicate)
 
@@ -76,12 +78,13 @@ final class CalendarManager {
         limit: Int = 5
     ) -> [CalendarEvent] {
         guard accessState == .authorized else { return [] }
+        let calendars = eventCalendars()
 
         let windowEnd = date.addingTimeInterval(window)
         let predicate = store.predicateForEvents(
             withStart: date,
             end: windowEnd,
-            calendars: nil
+            calendars: calendars
         )
         let events = store.events(matching: predicate)
             .filter { !$0.isAllDay && $0.startDate >= date }
@@ -92,6 +95,10 @@ final class CalendarManager {
     }
 
     // MARK: - Helpers
+
+    private func eventCalendars() -> [EKCalendar] {
+        store.calendars(for: .event)
+    }
 
     private static func currentAccessState() -> AccessState {
         switch EKEventStore.authorizationStatus(for: .event) {
@@ -119,6 +126,9 @@ extension CalendarEvent {
             title: event.title ?? "Untitled Event",
             startDate: event.startDate,
             endDate: event.endDate,
+            calendarID: event.calendar.calendarIdentifier,
+            calendarTitle: event.calendar.title,
+            calendarColorHex: CalendarColorCodec.hexString(from: event.calendar.cgColor),
             organizer: event.organizer?.name,
             participants: (event.attendees ?? []).map { Participant(from: $0) },
             isOnlineMeeting: CalendarMeetingLinkResolver.isOnlineMeeting(
@@ -218,5 +228,17 @@ enum CalendarMeetingLinkResolver {
 
         let absolute = url.absoluteString.lowercased()
         return textHints.contains(where: absolute.contains)
+    }
+}
+
+enum CalendarColorCodec {
+    static func hexString(from cgColor: CGColor?) -> String? {
+        guard let cgColor,
+              let nsColor = NSColor(cgColor: cgColor)?.usingColorSpace(.sRGB) else { return nil }
+
+        let red = Int(round(nsColor.redComponent * 255))
+        let green = Int(round(nsColor.greenComponent * 255))
+        let blue = Int(round(nsColor.blueComponent * 255))
+        return String(format: "#%02X%02X%02X", red, green, blue)
     }
 }
