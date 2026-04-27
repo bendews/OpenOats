@@ -52,8 +52,7 @@ struct NotesView: View {
     @State private var isMeetingFamilyBottomCollapsed = false
 
     private struct PendingMeetingFamilyFolderChange: Equatable {
-        let historyKey: String
-        let familyTitle: String
+        let selection: MeetingFamilySelection
         let folderPath: String?
         let existingMeetingCount: Int
     }
@@ -667,8 +666,15 @@ struct NotesView: View {
         creatingFolderForSessionID = session.id
     }
 
+    private func meetingFamilyPreferences(for selection: MeetingFamilySelection) -> MeetingFamilyPreferences? {
+        if let upcomingEvent = selection.upcomingEvent {
+            return settings.meetingFamilyPreferences(for: upcomingEvent)
+        }
+        return settings.meetingFamilyPreferences(forHistoryKey: selection.key)
+    }
+
     private func beginCreateFolder(for selection: MeetingFamilySelection) {
-        let preferredFolderPath = settings.meetingFamilyPreferences(forHistoryKey: selection.key)?.folderPath
+        let preferredFolderPath = meetingFamilyPreferences(for: selection)?.folderPath
         newFolderPath = preferredFolderPath ?? ""
         newFolderColor = folderDefinition(for: preferredFolderPath)?.color ?? .orange
         creatingFolderForMeetingFamilyKey = selection.key
@@ -863,13 +869,12 @@ struct NotesView: View {
         folderPath: String?,
         historyCount: Int
     ) {
-        let currentFolderPath = settings.meetingFamilyPreferences(forHistoryKey: selection.key)?.folderPath
+        let currentFolderPath = meetingFamilyPreferences(for: selection)?.folderPath
         guard currentFolderPath != folderPath else { return }
 
         if historyCount > 0 {
             pendingMeetingFamilyFolderChange = PendingMeetingFamilyFolderChange(
-                historyKey: selection.key,
-                familyTitle: selection.title,
+                selection: selection,
                 folderPath: folderPath,
                 existingMeetingCount: historyCount
             )
@@ -879,6 +884,7 @@ struct NotesView: View {
         controller.applyMeetingFamilyFolderPreference(
             folderPath,
             moveExistingSessions: false,
+            selection: selection,
             forHistoryKey: selection.key
         )
     }
@@ -891,7 +897,8 @@ struct NotesView: View {
         controller.applyMeetingFamilyFolderPreference(
             pendingChange.folderPath,
             moveExistingSessions: moveExistingSessions,
-            forHistoryKey: pendingChange.historyKey
+            selection: pendingChange.selection,
+            forHistoryKey: pendingChange.selection.key
         )
         pendingMeetingFamilyFolderChange = nil
     }
@@ -905,7 +912,7 @@ struct NotesView: View {
         let destination = folderDisplayName(for: pendingChange.folderPath)
         let count = pendingChange.existingMeetingCount
         let noun = count == 1 ? "saved meeting" : "saved meetings"
-        return "Use \(destination) for future meetings in \"\(pendingChange.familyTitle)\", or move the existing \(count) \(noun) there too."
+        return "Use \(destination) for future meetings in \"\(pendingChange.selection.title)\", or move the existing \(count) \(noun) there too."
     }
 
     private func folderDisplayName(for folderPath: String?) -> String {
@@ -1250,7 +1257,7 @@ struct NotesView: View {
         selection: MeetingFamilySelection,
         historyCount: Int
     ) -> some View {
-        let preferredFolderPath = settings.meetingFamilyPreferences(forHistoryKey: selection.key)?.folderPath
+        let preferredFolderPath = meetingFamilyPreferences(for: selection)?.folderPath
         let preferredFolder = folderDefinition(for: preferredFolderPath)
         let folders = meetingFamilyFolderChoices(including: preferredFolderPath)
 
@@ -1632,7 +1639,7 @@ struct NotesView: View {
     ) -> some View {
         let hasCalendarContext = state.loadedCalendarEvent != nil
         let historyCount = state.meetingHistoryEntries.count
-        let preferredFolderPath = settings.meetingFamilyPreferences(forHistoryKey: selection.key)?.folderPath
+        let preferredFolderPath = meetingFamilyPreferences(for: selection)?.folderPath
         let preferredFolder = folderDefinition(for: preferredFolderPath)
         let folders = meetingFamilyFolderChoices(including: preferredFolderPath)
         let selectedSession = state.selectedSessionID.flatMap { sessionID in
@@ -2678,7 +2685,7 @@ struct NotesView: View {
                             Toggle(isOn: Binding(
                                 get: {
                                     guard let selectedTemplate = state.selectedTemplate else { return false }
-                                    return settings.meetingFamilyPreferences(forHistoryKey: selection.key)?.templateID == selectedTemplate.id
+                                    return meetingFamilyPreferences(for: selection)?.templateID == selectedTemplate.id
                                 },
                                 set: { controller.setSelectedTemplateSavedForMeetingFamily($0) }
                             )) {

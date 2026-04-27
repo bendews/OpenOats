@@ -93,6 +93,36 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
         XCTAssertEqual(matched.map(\.id), ["newer", "older"])
     }
 
+    func testMeetingHistoryResolverMatchesRecurringSeriesEvenWhenTitleDrifts() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let event = makeEvent(
+            id: "evt",
+            title: "Regular Platform feedback",
+            start: startedAt,
+            externalIdentifier: "series-platform-feedback"
+        )
+        let sessions = [
+            SessionIndex(
+                id: "drifted",
+                startedAt: startedAt.addingTimeInterval(-100),
+                endedAt: nil,
+                templateSnapshot: nil,
+                title: "Platform council review",
+                utteranceCount: 12,
+                hasNotes: true,
+                language: nil,
+                meetingApp: nil,
+                engine: nil,
+                tags: nil,
+                source: nil,
+                meetingFamilyKey: MeetingHistoryResolver.seriesHistoryKey(forExternalIdentifier: "series-platform-feedback")
+            ),
+        ]
+
+        let matched = MeetingHistoryResolver.matchingSessions(for: event, sessionHistory: sessions)
+        XCTAssertEqual(matched.map(\.id), ["drifted"])
+    }
+
     func testMeetingHistoryResolverReturnsEmptyWithoutTitleMatch() {
         let event = makeEvent(id: "evt", title: "Design Review", start: Date())
         let sessions = [
@@ -245,6 +275,7 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
         id: String,
         title: String,
         start: Date,
+        externalIdentifier: String? = nil,
         calendarID: String? = nil,
         calendarTitle: String? = nil,
         duration: TimeInterval = 30 * 60
@@ -254,6 +285,7 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
             title: title,
             startDate: start,
             endDate: start.addingTimeInterval(duration),
+            externalIdentifier: externalIdentifier,
             calendarID: calendarID,
             calendarTitle: calendarTitle,
             calendarColorHex: nil,

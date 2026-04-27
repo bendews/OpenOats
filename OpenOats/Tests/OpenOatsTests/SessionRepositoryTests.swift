@@ -89,6 +89,36 @@ final class SessionRepositoryTests: XCTestCase {
         await repo.deleteSession(sessionID: handle.sessionID)
     }
 
+    func testStartSessionPersistsRecurringMeetingFamilyKey() async {
+        let calendarEvent = CalendarEvent(
+            id: "event-series-123",
+            title: "Regular Platform feedback",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            externalIdentifier: "series-platform-feedback",
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+        let handle = await repo.startSession(
+            config: SessionStartConfig(
+                templateSnapshot: nil,
+                title: calendarEvent.title,
+                calendarEvent: calendarEvent
+            )
+        )
+
+        let session = await repo.loadSession(id: handle.sessionID)
+        XCTAssertEqual(
+            session.index.meetingFamilyKey,
+            MeetingHistoryResolver.seriesHistoryKey(forExternalIdentifier: "series-platform-feedback")
+        )
+
+        await repo.endSession()
+        await repo.deleteSession(sessionID: handle.sessionID)
+    }
+
     // MARK: - appendLiveUtterance writes to JSONL
 
     func testAppendLiveUtteranceWritesToJSONL() async {

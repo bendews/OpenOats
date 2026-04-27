@@ -935,8 +935,12 @@ final class SettingsStore {
     }
 
     func meetingPrepNotes(for event: CalendarEvent) -> String {
-        let key = canonicalMeetingHistoryKey(for: event)
-        return meetingPrepNotesByKey[key] ?? ""
+        for key in orderedMeetingFamilyKeys(for: event) {
+            if let notes = meetingPrepNotesByKey[key], !notes.isEmpty {
+                return notes
+            }
+        }
+        return ""
     }
 
     func setMeetingPrepNotes(_ text: String, for event: CalendarEvent) {
@@ -951,7 +955,7 @@ final class SettingsStore {
     }
 
     func canonicalMeetingHistoryKey(for event: CalendarEvent) -> String {
-        canonicalMeetingHistoryKey(forHistoryKey: MeetingHistoryResolver.historyKey(for: event))
+        canonicalMeetingHistoryKey(forHistoryKey: MeetingHistoryResolver.preferredHistoryKey(for: event))
     }
 
     func canonicalMeetingHistoryKey(forHistoryKey historyKey: String) -> String {
@@ -962,7 +966,12 @@ final class SettingsStore {
     }
 
     func meetingFamilyPreferences(for event: CalendarEvent) -> MeetingFamilyPreferences? {
-        meetingFamilyPreferences(forHistoryKey: MeetingHistoryResolver.historyKey(for: event))
+        for key in orderedMeetingFamilyKeys(for: event) {
+            if let preferences = meetingFamilyPreferencesByKey[key] {
+                return preferences
+            }
+        }
+        return nil
     }
 
     func meetingFamilyPreferences(forHistoryKey historyKey: String) -> MeetingFamilyPreferences? {
@@ -973,7 +982,7 @@ final class SettingsStore {
     func setMeetingFamilyTemplatePreference(_ templateID: UUID?, for event: CalendarEvent) {
         setMeetingFamilyTemplatePreference(
             templateID,
-            forHistoryKey: MeetingHistoryResolver.historyKey(for: event)
+            forHistoryKey: MeetingHistoryResolver.preferredHistoryKey(for: event)
         )
     }
 
@@ -996,8 +1005,19 @@ final class SettingsStore {
     func setMeetingFamilyFolderPreference(_ folderPath: String?, for event: CalendarEvent) {
         setMeetingFamilyFolderPreference(
             folderPath,
-            forHistoryKey: MeetingHistoryResolver.historyKey(for: event)
+            forHistoryKey: MeetingHistoryResolver.preferredHistoryKey(for: event)
         )
+    }
+
+    private func orderedMeetingFamilyKeys(for event: CalendarEvent) -> [String] {
+        var keys: [String] = []
+        for historyKey in MeetingHistoryResolver.historyKeys(for: event) {
+            let canonicalKey = canonicalMeetingHistoryKey(forHistoryKey: historyKey)
+            if !canonicalKey.isEmpty, !keys.contains(canonicalKey) {
+                keys.append(canonicalKey)
+            }
+        }
+        return keys
     }
 
     func setMeetingFamilyFolderPreference(_ folderPath: String?, forHistoryKey historyKey: String) {

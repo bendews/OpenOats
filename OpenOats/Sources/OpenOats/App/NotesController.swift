@@ -310,7 +310,7 @@ final class NotesController {
             let familySelection = session.map { Self.meetingFamilySelection(for: $0, calendarEvent: data.calendarEvent) }
             state.selectedTemplate = selectedTemplate(
                 forSessionTemplateID: session?.templateSnapshot?.id,
-                meetingFamilyKey: familySelection?.key
+                meetingFamilySelection: familySelection
             )
 
             if let familySelection {
@@ -347,7 +347,7 @@ final class NotesController {
         state.showingOriginal = false
         state.selectedTemplate = selectedTemplate(
             forSessionTemplateID: nil,
-            meetingFamilyKey: selection.key
+            meetingFamilySelection: selection
         )
         coordinator.batchTextCleaner.cancel()
         syncCleanupStatus()
@@ -950,36 +950,63 @@ final class NotesController {
 
         if enabled {
             guard let template = state.selectedTemplate else { return }
-            settings.setMeetingFamilyTemplatePreference(template.id, forHistoryKey: selection.key)
+            if let event = selection.upcomingEvent {
+                settings.setMeetingFamilyTemplatePreference(template.id, for: event)
+            } else {
+                settings.setMeetingFamilyTemplatePreference(template.id, forHistoryKey: selection.key)
+            }
         } else {
-            settings.setMeetingFamilyTemplatePreference(nil, forHistoryKey: selection.key)
+            if let event = selection.upcomingEvent {
+                settings.setMeetingFamilyTemplatePreference(nil, for: event)
+            } else {
+                settings.setMeetingFamilyTemplatePreference(nil, forHistoryKey: selection.key)
+            }
         }
     }
 
     func setMeetingFamilyFolderPreference(_ folderPath: String?) {
         guard let settings,
               let selection = state.selectedMeetingFamily else { return }
-        settings.setMeetingFamilyFolderPreference(folderPath, forHistoryKey: selection.key)
+        if let event = selection.upcomingEvent {
+            settings.setMeetingFamilyFolderPreference(folderPath, for: event)
+        } else {
+            settings.setMeetingFamilyFolderPreference(folderPath, forHistoryKey: selection.key)
+        }
     }
 
     func applyMeetingFamilyFolderPreference(
         _ folderPath: String?,
         moveExistingSessions: Bool,
+        selection: MeetingFamilySelection? = nil,
         forHistoryKey historyKey: String? = nil
     ) {
         guard let settings else { return }
-        let key = historyKey ?? state.selectedMeetingFamily?.key
+        let resolvedSelection = selection ?? state.selectedMeetingFamily
+        let key = historyKey ?? resolvedSelection?.key
         guard let key, !key.isEmpty else { return }
 
-        settings.setMeetingFamilyFolderPreference(folderPath, forHistoryKey: key)
+        if let event = resolvedSelection?.upcomingEvent {
+            settings.setMeetingFamilyFolderPreference(folderPath, for: event)
+        } else {
+            settings.setMeetingFamilyFolderPreference(folderPath, forHistoryKey: key)
+        }
 
         guard moveExistingSessions else { return }
 
-        let sessionIDs = MeetingHistoryResolver.matchingSessions(
-            forHistoryKey: key,
-            sessionHistory: state.sessionHistory,
-            aliases: settings.meetingHistoryAliasesByKey
-        ).map(\.id)
+        let sessionIDs: [String]
+        if let event = resolvedSelection?.upcomingEvent {
+            sessionIDs = MeetingHistoryResolver.matchingSessions(
+                for: event,
+                sessionHistory: state.sessionHistory,
+                aliases: settings.meetingHistoryAliasesByKey
+            ).map(\.id)
+        } else {
+            sessionIDs = MeetingHistoryResolver.matchingSessions(
+                forHistoryKey: key,
+                sessionHistory: state.sessionHistory,
+                aliases: settings.meetingHistoryAliasesByKey
+            ).map(\.id)
+        }
 
         Task {
             for sessionID in sessionIDs {
@@ -1031,7 +1058,7 @@ final class NotesController {
 
     private func selectedTemplate(
         forSessionTemplateID sessionTemplateID: UUID?,
-        meetingFamilyKey: String?
+        meetingFamilySelection: MeetingFamilySelection?
     ) -> MeetingTemplate? {
         if let sessionTemplateID,
            sessionTemplateID != TemplateStore.genericID,
@@ -1039,8 +1066,16 @@ final class NotesController {
             return template
         }
 
-        if let meetingFamilyKey,
-           let preferredID = settings?.meetingFamilyPreferences(forHistoryKey: meetingFamilyKey)?.templateID,
+        let preferredID: UUID?
+        if let upcomingEvent = meetingFamilySelection?.upcomingEvent {
+            preferredID = settings?.meetingFamilyPreferences(for: upcomingEvent)?.templateID
+        } else if let meetingFamilyKey = meetingFamilySelection?.key {
+            preferredID = settings?.meetingFamilyPreferences(forHistoryKey: meetingFamilyKey)?.templateID
+        } else {
+            preferredID = nil
+        }
+
+        if let preferredID,
            let template = coordinator.templateStore.template(for: preferredID) {
             return template
         }
@@ -1109,7 +1144,15 @@ final class NotesController {
     }
 
     private func matchingMeetingHistorySessions(for selection: MeetingFamilySelection) -> [SessionIndex] {
-        MeetingHistoryResolver.matchingSessions(
+        if let upcomingEvent = selection.upcomingEvent {
+            return MeetingHistoryResolver.matchingSessions(
+                for: upcomingEvent,
+                sessionHistory: state.sessionHistory,
+                aliases: settings?.meetingHistoryAliasesByKey ?? [:]
+            )
+        }
+
+        return MeetingHistoryResolver.matchingSessions(
             forHistoryKey: selection.key,
             sessionHistory: state.sessionHistory,
             aliases: settings?.meetingHistoryAliasesByKey ?? [:]
@@ -1281,12 +1324,14 @@ final class NotesController {
     ) -> MeetingFamilySelection {
         let trimmedTitle = session.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let title = trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
-        let key = MeetingHistoryResolver.historyKey(for: title)
+        let key = calendarEvent.map(MeetingHistoryResolver.preferredHistoryKey(for:))
+            ?? session.meetingFamilyKey
+            ?? MeetingHistoryResolver.historyKey(for: title)
         return MeetingFamilySelection(
             key: key,
             title: title,
             calendarTitle: calendarEvent?.calendarTitle,
-            upcomingEvent: nil
+            upcomingEvent: calendarEvent
         )
     }
 

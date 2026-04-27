@@ -387,6 +387,8 @@ struct SessionIndex: Identifiable, Codable, Sendable {
     var folderPath: String? = nil
     /// How the session was created (nil for live sessions, "imported" for imported audio).
     var source: String?
+    /// Stronger recurring meeting-family key derived from a calendar series identifier when available.
+    var meetingFamilyKey: String? = nil
 }
 
 struct SessionSidecar: Codable, Sendable {

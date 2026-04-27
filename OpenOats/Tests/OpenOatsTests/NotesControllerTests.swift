@@ -1035,6 +1035,50 @@ final class NotesControllerTests: XCTestCase {
         XCTAssertEqual(controller.state.selectedTemplate?.id, TemplateStore.standUpID)
     }
 
+    func testSelectSessionUsesRecurringSeriesTemplatePreferenceWhenTitleDrifts() async {
+        let (root, notes) = makeTempDirs()
+        let settings = makeSettings(notesDirectory: notes)
+        let (controller, coordinator) = makeController(root: root, settings: settings)
+
+        let preferredEvent = CalendarEvent(
+            id: "evt-platform-feedback-new",
+            title: "Regular Platform feedback",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            externalIdentifier: "series-platform-feedback",
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+        settings.setMeetingFamilyTemplatePreference(TemplateStore.standUpID, for: preferredEvent)
+
+        let historicalEvent = CalendarEvent(
+            id: "evt-platform-feedback-old",
+            title: "Platform feedback",
+            startDate: Date(timeIntervalSince1970: 1_699_000_000),
+            endDate: Date(timeIntervalSince1970: 1_699_000_900),
+            externalIdentifier: "series-platform-feedback",
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+
+        await seedSession(
+            coordinator: coordinator,
+            sessionID: "platform-feedback",
+            title: "Platform feedback",
+            calendarEvent: historicalEvent
+        )
+        await controller.loadHistory()
+
+        controller.selectSession("platform-feedback")
+        try? await Task.sleep(for: .milliseconds(250))
+
+        XCTAssertEqual(controller.state.selectedTemplate?.id, TemplateStore.standUpID)
+    }
+
     func testApplyMeetingFamilyFolderPreferenceCanMoveExistingSessions() async {
         let (root, notes) = makeTempDirs()
         let settings = makeSettings(notesDirectory: notes)

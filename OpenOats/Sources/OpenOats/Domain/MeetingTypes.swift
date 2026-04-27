@@ -48,6 +48,7 @@ struct CalendarEvent: Sendable, Hashable, Codable, Identifiable {
     let title: String
     let startDate: Date
     let endDate: Date
+    let externalIdentifier: String?
     let calendarID: String?
     let calendarTitle: String?
     let calendarColorHex: String?
@@ -61,6 +62,7 @@ struct CalendarEvent: Sendable, Hashable, Codable, Identifiable {
         title: String,
         startDate: Date,
         endDate: Date,
+        externalIdentifier: String? = nil,
         calendarID: String? = nil,
         calendarTitle: String? = nil,
         calendarColorHex: String? = nil,
@@ -73,6 +75,7 @@ struct CalendarEvent: Sendable, Hashable, Codable, Identifiable {
         self.title = title
         self.startDate = startDate
         self.endDate = endDate
+        self.externalIdentifier = externalIdentifier
         self.calendarID = calendarID
         self.calendarTitle = calendarTitle
         self.calendarColorHex = calendarColorHex
@@ -129,12 +132,38 @@ enum MeetingHistoryResolver {
         normalizedTitle(event.title)
     }
 
+    static func preferredHistoryKey(for event: CalendarEvent) -> String {
+        seriesHistoryKey(for: event) ?? historyKey(for: event)
+    }
+
+    static func historyKeys(for event: CalendarEvent) -> [String] {
+        historyKeys(title: event.title, meetingFamilyKey: seriesHistoryKey(for: event))
+    }
+
     static func historyKey(for title: String) -> String {
         normalizedTitle(title)
     }
 
     static func matchingSessions(for event: CalendarEvent, sessionHistory: [SessionIndex]) -> [SessionIndex] {
-        matchingSessions(forHistoryKey: historyKey(for: event), sessionHistory: sessionHistory)
+        matchingSessions(for: event, sessionHistory: sessionHistory, aliases: [:])
+    }
+
+    static func matchingSessions(
+        for event: CalendarEvent,
+        sessionHistory: [SessionIndex],
+        aliases: [String: String]
+    ) -> [SessionIndex] {
+        let eventKeys = Set(historyKeys(for: event).map { canonicalHistoryKey(for: $0, aliases: aliases) })
+            .filter { !$0.isEmpty }
+        guard !eventKeys.isEmpty else { return [] }
+
+        return sessionHistory
+            .filter { session in
+                historyKeys(title: session.title, meetingFamilyKey: session.meetingFamilyKey)
+                    .map { canonicalHistoryKey(for: $0, aliases: aliases) }
+                    .contains { eventKeys.contains($0) }
+            }
+            .sorted { $0.startedAt > $1.startedAt }
     }
 
     static func matchingSessions(forHistoryKey historyKey: String, sessionHistory: [SessionIndex]) -> [SessionIndex] {
@@ -149,10 +178,24 @@ enum MeetingHistoryResolver {
         guard !historyKey.isEmpty else { return [] }
         let canonicalKey = canonicalHistoryKey(for: historyKey, aliases: aliases)
         return sessionHistory
-            .filter {
-                canonicalHistoryKey(for: normalizedTitle($0.title ?? ""), aliases: aliases) == canonicalKey
+            .filter { session in
+                historyKeys(title: session.title, meetingFamilyKey: session.meetingFamilyKey)
+                    .map { canonicalHistoryKey(for: $0, aliases: aliases) }
+                    .contains(canonicalKey)
             }
             .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    static func seriesHistoryKey(for event: CalendarEvent) -> String? {
+        seriesHistoryKey(forExternalIdentifier: event.externalIdentifier)
+    }
+
+    static func seriesHistoryKey(forExternalIdentifier externalIdentifier: String?) -> String? {
+        let trimmed = externalIdentifier?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return "series:\(trimmed)"
     }
 
     static func canonicalHistoryKey(for historyKey: String, aliases: [String: String]) -> String {
@@ -208,6 +251,22 @@ enum MeetingHistoryResolver {
 
     private static func tokenSet(forHistoryKey historyKey: String) -> Set<String> {
         Set(historyKey.split(separator: " ").map(String.init))
+    }
+
+    private static func historyKeys(title: String?, meetingFamilyKey: String?) -> [String] {
+        var keys: [String] = []
+
+        if let meetingFamilyKey,
+           !meetingFamilyKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            keys.append(meetingFamilyKey)
+        }
+
+        let titleKey = normalizedTitle(title ?? "")
+        if !titleKey.isEmpty, !keys.contains(titleKey) {
+            keys.append(titleKey)
+        }
+
+        return keys
     }
 
     private static func singleTokenRelationScore(

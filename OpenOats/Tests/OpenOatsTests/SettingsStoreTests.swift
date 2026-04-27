@@ -527,6 +527,53 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.meetingFamilyPreferencesByKey.isEmpty)
     }
 
+    func testMeetingFamilyPreferencesForRecurringEventFallBackToLegacyTitleKey() {
+        let store = makeStore()
+        let recurringEvent = CalendarEvent(
+            id: "evt-recurring",
+            title: "Weekly Sync",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            externalIdentifier: "series-123",
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+
+        store.setMeetingFamilyFolderPreference(
+            "Work/Weekly",
+            forHistoryKey: MeetingHistoryResolver.historyKey(for: recurringEvent.title)
+        )
+
+        XCTAssertEqual(
+            store.meetingFamilyPreferences(for: recurringEvent)?.folderPath,
+            "Work/Weekly"
+        )
+    }
+
+    func testMeetingFamilyPreferencesForRecurringEventWriteToSeriesKey() {
+        let store = makeStore()
+        let recurringEvent = CalendarEvent(
+            id: "evt-recurring",
+            title: "Weekly Sync",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            externalIdentifier: "series-123",
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+
+        store.setMeetingFamilyTemplatePreference(TemplateStore.weeklyID, for: recurringEvent)
+
+        XCTAssertEqual(
+            store.meetingFamilyPreferencesByKey[MeetingHistoryResolver.seriesHistoryKey(forExternalIdentifier: "series-123")!]?.templateID,
+            TemplateStore.weeklyID
+        )
+    }
+
     func testKbFolderURLWhenEmpty() {
         let store = makeStore()
         XCTAssertNil(store.kbFolderURL)

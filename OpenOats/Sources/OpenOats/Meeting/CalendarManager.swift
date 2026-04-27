@@ -149,6 +149,7 @@ extension CalendarEvent {
             title: event.title ?? "Untitled Event",
             startDate: event.startDate,
             endDate: event.endDate,
+            externalIdentifier: event.calendarItemExternalIdentifier,
             calendarID: event.calendar.calendarIdentifier,
             calendarTitle: event.calendar.title,
             calendarColorHex: CalendarColorCodec.hexString(from: event.calendar.cgColor),

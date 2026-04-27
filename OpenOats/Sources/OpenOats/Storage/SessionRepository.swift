@@ -748,7 +748,8 @@ actor SessionRepository {
                         engine: meta.engine,
                         tags: meta.tags,
                         folderPath: meta.folderPath,
-                        source: meta.source
+                        source: meta.source,
+                        meetingFamilyKey: meta.calendarEvent.flatMap { MeetingHistoryResolver.seriesHistoryKey(for: $0) }
                     ))
                     continue
                 }
@@ -786,7 +787,8 @@ actor SessionRepository {
                 engine: meta.engine,
                 tags: meta.tags,
                 folderPath: meta.folderPath,
-                source: meta.source
+                source: meta.source,
+                meetingFamilyKey: meta.calendarEvent.flatMap { MeetingHistoryResolver.seriesHistoryKey(for: $0) }
             )
 
             let transcript = loadTranscript(sessionID: id)
@@ -1777,7 +1779,8 @@ actor SessionRepository {
             engine: meta?.engine,
             tags: meta?.tags,
             folderPath: meta?.folderPath,
-            source: meta?.source
+            source: meta?.source,
+            meetingFamilyKey: meta?.calendarEvent.flatMap { MeetingHistoryResolver.seriesHistoryKey(for: $0) }
         )
 
         MarkdownMeetingWriter.write(
