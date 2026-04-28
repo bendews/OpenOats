@@ -707,6 +707,51 @@ final class LiveSessionControllerTests: XCTestCase {
         XCTAssertNil(controller.state.lastEndedSession?.transcriptIssue)
     }
 
+    func testEmptySessionDiagnosticClassificationMarksMissingAudio() {
+        let input = LiveSessionController.RecordingHealthInput(
+            elapsed: 8,
+            transcriptionModel: .parakeetV3,
+            utteranceCount: 0,
+            peakAudioLevel: 0,
+            micHasCapturedFrames: false,
+            systemHasCapturedFrames: false,
+            micCaptureError: nil,
+            isMicMuted: false,
+            hasBlockingError: false
+        )
+
+        XCTAssertEqual(
+            LiveSessionController.emptySessionDiagnosticClassification(for: input),
+            .noAudioDetected
+        )
+    }
+
+    func testEmptySessionDiagnosticsMessageIsStructuredJSON() throws {
+        let event = LiveSessionController.EmptySessionDiagnosticsEvent(
+            event: "live_empty_session_finalized",
+            sessionID: "session-123",
+            transcriptionModel: TranscriptionModel.elevenLabsScribe.rawValue,
+            elapsedSeconds: 90,
+            utteranceCount: 0,
+            peakAudioLevel: 0.08,
+            micCapturedFrames: true,
+            systemCapturedFrames: true,
+            micCaptureError: nil,
+            classification: LiveSessionController.EmptySessionDiagnosticClassification.transcriptionProducedNoText.rawValue,
+            retainedRecoveryAudio: true,
+            recoveryBatchAttempted: true,
+            recoveryResult: "queued",
+            finalUtteranceCount: nil,
+            mergedIntoSessionID: nil,
+            failureMessage: nil
+        )
+
+        let message = LiveSessionController.emptySessionDiagnosticsMessage(for: event)
+        let data = try XCTUnwrap(message.data(using: .utf8))
+        let decoded = try JSONDecoder().decode(LiveSessionController.EmptySessionDiagnosticsEvent.self, from: data)
+
+        XCTAssertEqual(decoded, event)
+    }
     func testRunningStateChangeCallbackFires() async {
         let dirs = makeTempDirs()
         let settings = makeSettings(notesDirectory: dirs.notes)

@@ -52,6 +52,37 @@ final class LiveSessionState {
 @Observable
 @MainActor
 final class LiveSessionController {
+    enum EmptySessionDiagnosticClassification: String, Equatable {
+        case noAudioDetected = "no_audio_detected"
+        case transcriptionProducedNoText = "transcription_produced_no_text"
+        case unclassified = "unclassified"
+    }
+
+    struct EmptySessionDiagnosticsEvent: Codable, Equatable {
+        let event: String
+        let sessionID: String
+        let transcriptionModel: String
+        let elapsedSeconds: Int
+        let utteranceCount: Int
+        let peakAudioLevel: Float
+        let micCapturedFrames: Bool
+        let systemCapturedFrames: Bool
+        let micCaptureError: String?
+        let classification: String
+        let retainedRecoveryAudio: Bool
+        let recoveryBatchAttempted: Bool
+        let recoveryResult: String
+        let finalUtteranceCount: Int?
+        let mergedIntoSessionID: String?
+        let failureMessage: String?
+    }
+
+    private struct PendingRecoveryDiagnostics: Equatable {
+        let sessionID: String
+        let transcriptionModel: String
+        let classification: EmptySessionDiagnosticClassification
+    }
+
     struct AudioRetentionPlan: Equatable {
         let shouldStartRecorder: Bool
         let shouldRetainBatchAudio: Bool
@@ -97,6 +128,7 @@ final class LiveSessionController {
     /// preventing the auto-dismiss → re-poll cycle from re-triggering the notification.
     private var lastNotifiedBatchSessionID: String?
     private var observedPeakAudioLevelSinceStart: Float = 0
+    private var pendingRecoveryDiagnostics: PendingRecoveryDiagnostics?
 
     init(coordinator: AppCoordinator, container: AppContainer) {
         self.coordinator = coordinator
@@ -131,6 +163,80 @@ final class LiveSessionController {
                 if status != .idle || coordinator.batchStatus != .idle {
                     coordinator.batchStatus = status
                     coordinator.batchIsImporting = importing
+
+                    if let pendingRecoveryDiagnostics {
+                        switch status {
+                        case .completed(let sid) where sid == pendingRecoveryDiagnostics.sessionID:
+                            let recoveredIndex = await coordinator.sessionRepository.loadSession(id: sid).index
+                            recordEmptySessionDiagnostics(
+                                EmptySessionDiagnosticsEvent(
+                                    event: "live_empty_session_recovery",
+                                    sessionID: sid,
+                                    transcriptionModel: pendingRecoveryDiagnostics.transcriptionModel,
+                                    elapsedSeconds: 0,
+                                    utteranceCount: 0,
+                                    peakAudioLevel: 0,
+                                    micCapturedFrames: false,
+                                    systemCapturedFrames: false,
+                                    micCaptureError: nil,
+                                    classification: pendingRecoveryDiagnostics.classification.rawValue,
+                                    retainedRecoveryAudio: true,
+                                    recoveryBatchAttempted: true,
+                                    recoveryResult: recoveredIndex.utteranceCount > 0 ? "completed" : "completed_empty",
+                                    finalUtteranceCount: recoveredIndex.utteranceCount,
+                                    mergedIntoSessionID: nil,
+                                    failureMessage: nil
+                                )
+                            )
+                            self.pendingRecoveryDiagnostics = nil
+                        case .failed(let message):
+                            recordEmptySessionDiagnostics(
+                                EmptySessionDiagnosticsEvent(
+                                    event: "live_empty_session_recovery",
+                                    sessionID: pendingRecoveryDiagnostics.sessionID,
+                                    transcriptionModel: pendingRecoveryDiagnostics.transcriptionModel,
+                                    elapsedSeconds: 0,
+                                    utteranceCount: 0,
+                                    peakAudioLevel: 0,
+                                    micCapturedFrames: false,
+                                    systemCapturedFrames: false,
+                                    micCaptureError: nil,
+                                    classification: pendingRecoveryDiagnostics.classification.rawValue,
+                                    retainedRecoveryAudio: true,
+                                    recoveryBatchAttempted: true,
+                                    recoveryResult: "failed",
+                                    finalUtteranceCount: nil,
+                                    mergedIntoSessionID: nil,
+                                    failureMessage: message
+                                )
+                            )
+                            self.pendingRecoveryDiagnostics = nil
+                        case .cancelled:
+                            recordEmptySessionDiagnostics(
+                                EmptySessionDiagnosticsEvent(
+                                    event: "live_empty_session_recovery",
+                                    sessionID: pendingRecoveryDiagnostics.sessionID,
+                                    transcriptionModel: pendingRecoveryDiagnostics.transcriptionModel,
+                                    elapsedSeconds: 0,
+                                    utteranceCount: 0,
+                                    peakAudioLevel: 0,
+                                    micCapturedFrames: false,
+                                    systemCapturedFrames: false,
+                                    micCaptureError: nil,
+                                    classification: pendingRecoveryDiagnostics.classification.rawValue,
+                                    retainedRecoveryAudio: true,
+                                    recoveryBatchAttempted: true,
+                                    recoveryResult: "cancelled",
+                                    finalUtteranceCount: nil,
+                                    mergedIntoSessionID: nil,
+                                    failureMessage: nil
+                                )
+                            )
+                            self.pendingRecoveryDiagnostics = nil
+                        default:
+                            break
+                        }
+                    }
 
                     if case .completed(let sid) = status, lastNotifiedBatchSessionID != sid {
                         lastNotifiedBatchSessionID = sid
@@ -457,33 +563,19 @@ final class LiveSessionController {
             guard let locale = settings?.transcriptionLocale, !locale.isEmpty else { return nil }
             return locale
         }()
-        let transcriptIssueInput: RecordingHealthInput
-        if let meetingStartedAt = endingMetadata?.startedAt, let transcriptionModel = settings?.transcriptionModel {
-            transcriptIssueInput = RecordingHealthInput(
-                elapsed: max(0, Date().timeIntervalSince(meetingStartedAt)),
-                transcriptionModel: transcriptionModel,
-                utteranceCount: utteranceCount,
-                peakAudioLevel: peakAudioLevelAtStop,
-                micHasCapturedFrames: captureHealthAtStop?.micHasCapturedFrames ?? false,
-                systemHasCapturedFrames: captureHealthAtStop?.systemHasCapturedFrames ?? false,
-                micCaptureError: captureHealthAtStop?.micCaptureError,
-                isMicMuted: wasMicMutedAtStop,
-                hasBlockingError: false
-            )
-        } else {
-            transcriptIssueInput = RecordingHealthInput(
-                elapsed: 0,
-                transcriptionModel: settings?.transcriptionModel ?? .parakeetV3,
-                utteranceCount: utteranceCount,
-                peakAudioLevel: peakAudioLevelAtStop,
-                micHasCapturedFrames: captureHealthAtStop?.micHasCapturedFrames ?? false,
-                systemHasCapturedFrames: captureHealthAtStop?.systemHasCapturedFrames ?? false,
-                micCaptureError: captureHealthAtStop?.micCaptureError,
-                isMicMuted: wasMicMutedAtStop,
-                hasBlockingError: false
-            )
-        }
-        let transcriptIssue = Self.transcriptIssue(for: transcriptIssueInput)
+        let recordingHealthInput = RecordingHealthInput(
+            elapsed: max(0, Date().timeIntervalSince(endingMetadata?.startedAt ?? Date())),
+            transcriptionModel: settings?.transcriptionModel ?? .parakeetV3,
+            utteranceCount: utteranceCount,
+            peakAudioLevel: peakAudioLevelAtStop,
+            micHasCapturedFrames: captureHealthAtStop?.micHasCapturedFrames ?? false,
+            systemHasCapturedFrames: captureHealthAtStop?.systemHasCapturedFrames ?? false,
+            micCaptureError: captureHealthAtStop?.micCaptureError,
+            isMicMuted: wasMicMutedAtStop,
+            hasBlockingError: false
+        )
+        let transcriptIssue = Self.transcriptIssue(for: recordingHealthInput)
+        let emptySessionClassification = Self.emptySessionDiagnosticClassification(for: recordingHealthInput)
 
         // 4. Finalize: closes file handle, backfills cleaned text, writes session.json
         await coordinator.sessionRepository.finalizeSession(
@@ -615,6 +707,7 @@ final class LiveSessionController {
         // 7. Collapse obviously empty duplicate sessions back into the real meeting session.
         var effectiveIndex = index
         var shouldRunBatchRetranscription = settings?.enableBatchRetranscription == true
+        var mergedSessionID: String?
         if forcedRecoveryBatch {
             if retainedBatchAudio {
                 shouldRunBatchRetranscription = true
@@ -630,13 +723,59 @@ final class LiveSessionController {
             }
         }
         if utteranceCount == 0,
-           let mergedSessionID = await coordinator.sessionRepository.reconcileGhostSession(sessionID: sessionID) {
-            effectiveIndex = await coordinator.sessionRepository.loadSession(id: mergedSessionID).index
+           let merged = await coordinator.sessionRepository.reconcileGhostSession(sessionID: sessionID) {
+            mergedSessionID = merged
+            effectiveIndex = await coordinator.sessionRepository.loadSession(id: merged).index
             shouldRunBatchRetranscription = false
             DiagnosticsSupport.record(
                 category: "meeting",
-                message: "Collapsed empty duplicate session \(sessionID) into \(mergedSessionID)"
+                message: "Collapsed empty duplicate session \(sessionID) into \(merged)"
             )
+        }
+
+        let queuedRecoveryBatch = shouldRunBatchRetranscription && coordinator.batchAudioTranscriber != nil
+        if utteranceCount == 0, let classification = emptySessionClassification {
+            let recoveryResult: String
+            if mergedSessionID != nil {
+                recoveryResult = "collapsed_into_existing_session"
+            } else if queuedRecoveryBatch {
+                recoveryResult = "queued"
+            } else if forcedRecoveryBatch && !retainedBatchAudio {
+                recoveryResult = "unavailable_no_retained_audio"
+            } else {
+                recoveryResult = "not_attempted"
+            }
+            recordEmptySessionDiagnostics(
+                EmptySessionDiagnosticsEvent(
+                    event: "live_empty_session_finalized",
+                    sessionID: sessionID,
+                    transcriptionModel: recordingHealthInput.transcriptionModel.rawValue,
+                    elapsedSeconds: Int(recordingHealthInput.elapsed.rounded()),
+                    utteranceCount: recordingHealthInput.utteranceCount,
+                    peakAudioLevel: recordingHealthInput.peakAudioLevel,
+                    micCapturedFrames: recordingHealthInput.micHasCapturedFrames,
+                    systemCapturedFrames: recordingHealthInput.systemHasCapturedFrames,
+                    micCaptureError: recordingHealthInput.micCaptureError,
+                    classification: classification.rawValue,
+                    retainedRecoveryAudio: retainedBatchAudio,
+                    recoveryBatchAttempted: queuedRecoveryBatch,
+                    recoveryResult: recoveryResult,
+                    finalUtteranceCount: nil,
+                    mergedIntoSessionID: mergedSessionID,
+                    failureMessage: nil
+                )
+            )
+            if queuedRecoveryBatch {
+                pendingRecoveryDiagnostics = PendingRecoveryDiagnostics(
+                    sessionID: sessionID,
+                    transcriptionModel: recordingHealthInput.transcriptionModel.rawValue,
+                    classification: classification
+                )
+            } else {
+                pendingRecoveryDiagnostics = nil
+            }
+        } else {
+            pendingRecoveryDiagnostics = nil
         }
 
         // 8. Update UI state + refresh history
@@ -748,6 +887,43 @@ final class LiveSessionController {
         }
 
         return nil
+    }
+
+    static func emptySessionDiagnosticClassification(for input: RecordingHealthInput) -> EmptySessionDiagnosticClassification? {
+        guard input.utteranceCount == 0 else { return nil }
+
+        if let micCaptureError = input.micCaptureError, !micCaptureError.isEmpty {
+            return .noAudioDetected
+        }
+
+        if input.elapsed >= 5,
+           !input.systemHasCapturedFrames,
+           (!input.isMicMuted && !input.micHasCapturedFrames) {
+            return .noAudioDetected
+        }
+
+        if input.peakAudioLevel >= 0.04,
+           input.micHasCapturedFrames || input.systemHasCapturedFrames {
+            return .transcriptionProducedNoText
+        }
+
+        return .unclassified
+    }
+
+    static func emptySessionDiagnosticsMessage(for event: EmptySessionDiagnosticsEvent) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if let data = try? encoder.encode(event),
+           let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        return "event=\(event.event) session_id=\(event.sessionID) classification=\(event.classification)"
+    }
+
+    private func recordEmptySessionDiagnostics(_ event: EmptySessionDiagnosticsEvent) {
+        let message = Self.emptySessionDiagnosticsMessage(for: event)
+        DiagnosticsSupport.record(category: "meeting", message: message)
+        Log.diagnostics.info("\(message, privacy: .public)")
     }
 
     func discardSession() {
