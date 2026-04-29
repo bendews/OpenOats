@@ -342,6 +342,50 @@ final class NotesControllerTests: XCTestCase {
         XCTAssertEqual(controller.state.loadedTranscript.map(\.text), ["Existing transcript"])
     }
 
+    func testPrepareManualTranscriptSessionCreatesNewOccurrenceWhenRecurringSeriesSharesCalendarID() async {
+        let (root, _) = makeTempDirs()
+        let (controller, coordinator) = makeController(root: root)
+        let priorEvent = CalendarEvent(
+            id: "evt-recurring-shared-id",
+            title: "Daily Standup",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+        let nextDayEvent = CalendarEvent(
+            id: priorEvent.id,
+            title: priorEvent.title,
+            startDate: priorEvent.startDate.addingTimeInterval(24 * 60 * 60),
+            endDate: priorEvent.endDate.addingTimeInterval(24 * 60 * 60),
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+
+        await seedSession(
+            coordinator: coordinator,
+            sessionID: "session_previous_occurrence",
+            title: priorEvent.title,
+            utterances: [SessionRecord(speaker: .you, text: "Yesterday", timestamp: priorEvent.startDate)],
+            calendarEvent: priorEvent,
+            startedAt: priorEvent.startDate
+        )
+
+        controller.showMeetingFamily(for: nextDayEvent)
+
+        let shouldPrompt = await controller.prepareManualTranscriptSession(for: nextDayEvent)
+        try? await Task.sleep(for: .milliseconds(250))
+
+        XCTAssertTrue(shouldPrompt)
+        XCTAssertNotEqual(controller.state.selectedSessionID, "session_previous_occurrence")
+        XCTAssertEqual(controller.state.loadedCalendarEvent?.startDate, nextDayEvent.startDate)
+        XCTAssertTrue(controller.state.loadedTranscript.isEmpty)
+    }
+
     func testGenerateNotesUpdatesStatus() async {
         let (root, notes) = makeTempDirs()
         let (controller, coordinator) = makeController(root: root)

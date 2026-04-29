@@ -668,6 +668,52 @@ final class SessionRepositoryTests: XCTestCase {
         await repo.deleteSession(sessionID: firstSessionID)
     }
 
+    func testCreateManualTranscriptSessionDoesNotReuseRecurringOccurrenceFromDifferentDay() async {
+        let priorOccurrence = makeCalendarEvent()
+        let nextDayStart = priorOccurrence.startDate.addingTimeInterval(24 * 60 * 60)
+        let nextDayEvent = CalendarEvent(
+            id: priorOccurrence.id,
+            title: priorOccurrence.title,
+            startDate: nextDayStart,
+            endDate: nextDayStart.addingTimeInterval(priorOccurrence.endDate.timeIntervalSince(priorOccurrence.startDate)),
+            calendarID: priorOccurrence.calendarID,
+            calendarTitle: priorOccurrence.calendarTitle,
+            calendarColorHex: priorOccurrence.calendarColorHex,
+            organizer: priorOccurrence.organizer,
+            participants: priorOccurrence.participants,
+            isOnlineMeeting: priorOccurrence.isOnlineMeeting,
+            meetingURL: priorOccurrence.meetingURL
+        )
+
+        let firstSessionID = await repo.createManualTranscriptSession(
+            config: .init(
+                title: priorOccurrence.title,
+                startedAt: priorOccurrence.startDate,
+                endedAt: priorOccurrence.endDate,
+                calendarEvent: priorOccurrence,
+                folderPath: nil
+            )
+        )
+
+        let secondSessionID = await repo.createManualTranscriptSession(
+            config: .init(
+                title: nextDayEvent.title,
+                startedAt: nextDayEvent.startDate,
+                endedAt: nextDayEvent.endDate,
+                calendarEvent: nextDayEvent,
+                folderPath: nil
+            )
+        )
+
+        XCTAssertNotEqual(secondSessionID, firstSessionID)
+
+        let sessions = await repo.listSessions()
+        XCTAssertEqual(sessions.count, 2)
+
+        await repo.deleteSession(sessionID: firstSessionID)
+        await repo.deleteSession(sessionID: secondSessionID)
+    }
+
     func testSaveFinalTranscript() async {
         let sessionID = "session_final_test"
         let initialStart = Date(timeIntervalSince1970: 100)

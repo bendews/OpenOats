@@ -1161,12 +1161,11 @@ actor SessionRepository {
             }
 
             let gap = abs(metadata.startedAt.timeIntervalSince(referenceDate))
+            guard gap <= maximumGap else { return nil }
 
             if metadata.calendarEvent?.id == referenceEventID {
                 return (candidate.id, true, gap)
             }
-
-            guard gap <= maximumGap else { return nil }
 
             let candidateTitle = metadata.title ?? metadata.calendarEvent?.title
             guard MeetingHistoryResolver.historyKey(for: candidateTitle ?? "") == historyKey else {
