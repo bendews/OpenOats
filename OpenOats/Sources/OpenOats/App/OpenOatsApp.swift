@@ -55,8 +55,13 @@ public struct OpenOatsRootApp: App {
                     }
                     switch command {
                     case .openNotes(let sessionID):
-                        coordinator.queueSessionSelection(sessionID)
-                        openNotesWindow()
+                        if coordinator.isRecording {
+                            coordinator.queueSessionSelection(sessionID, consumer: .standaloneWindow)
+                            openStandaloneNotesWindow()
+                        } else {
+                            coordinator.queueSessionSelection(sessionID)
+                            showMeetingBrowser()
+                        }
                     default:
                         coordinator.queueExternalCommand(command)
                     }
@@ -64,7 +69,7 @@ public struct OpenOatsRootApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
-        .defaultSize(width: 320, height: 560)
+        .defaultSize(width: Self.compactMainWindowIdealSize.width, height: Self.compactMainWindowIdealSize.height)
         .commands {
             CommandGroup(after: .appInfo) {
                 if case .live = container.mode {
@@ -79,9 +84,14 @@ public struct OpenOatsRootApp: App {
                 .keyboardShortcut("l", modifiers: [.command, .shift])
 
                 Button("Past Meetings") {
-                    openNotesWindow()
+                    coordinator.queueSessionSelection(nil)
+                    showMeetingBrowser()
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+
+                Button("Open Standalone Notes Window") {
+                    openStandaloneNotesWindow()
+                }
 
                 Button("Import Meeting Recording...") {
                     importMeetingRecording()
@@ -97,8 +107,10 @@ public struct OpenOatsRootApp: App {
             }
         }
 
-        Window("Notes", id: "notes") {
-            NotesView(settings: settings)
+        // Kept intentionally as a secondary multi-window browser. Primary entry points now
+        // route into the main window's consolidated meeting experience.
+        Window("Notes (Standalone)", id: "notes") {
+            NotesView(settings: settings, navigationConsumer: .standaloneWindow)
                 .environment(container)
                 .environment(coordinator)
                 .defaultAppStorage(defaults)
@@ -125,8 +137,18 @@ public struct OpenOatsRootApp: App {
 
 extension OpenOatsRootApp {
     static let mainWindowID = "main"
+    static let compactMainWindowMinSize = NSSize(width: 380, height: 540)
+    static let compactMainWindowIdealSize = NSSize(width: 420, height: 620)
+    static let compactMainWindowMaxSize = NSSize(width: 600, height: 960)
+    static let expandedMainWindowMinSize = NSSize(width: 860, height: 600)
+    static let expandedMainWindowIdealSize = NSSize(width: 980, height: 680)
+    static let expandedMainWindowMaxSize = NSSize(width: 1_400, height: 1_100)
 
-    private func openNotesWindow() {
+    private func showMeetingBrowser() {
+        showMainWindow()
+    }
+
+    private func openStandaloneNotesWindow() {
         openWindow(id: "notes")
     }
 
@@ -201,7 +223,7 @@ extension OpenOatsRootApp {
             let status = await batchAudioTranscriber.status
             if case .completed = status {
                 coordinator.queueSessionSelection(sessionID)
-                openNotesWindow()
+                showMeetingBrowser()
                 await coordinator.loadHistory()
             } else if case .failed = status {
                 // Clean up the orphaned session

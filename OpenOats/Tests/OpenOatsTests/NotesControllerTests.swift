@@ -662,6 +662,30 @@ final class NotesControllerTests: XCTestCase {
         XCTAssertEqual(controller.state.meetingHistoryEntries.map(\.session.id), ["session_payment_ops"])
     }
 
+    func testOnAppearCanPrepareManualTranscriptRequest() async {
+        let (root, _) = makeTempDirs()
+        let (controller, coordinator) = makeController(root: root)
+
+        let event = CalendarEvent(
+            id: "evt_manual_transcript",
+            title: "Customer Sync",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+        coordinator.queueManualTranscript(event)
+
+        await controller.onAppear()
+        try? await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertNotNil(controller.state.selectedSessionID)
+        XCTAssertEqual(controller.state.loadedCalendarEvent?.id, "evt_manual_transcript")
+        XCTAssertEqual(coordinator.sessionHistory.count, 1)
+    }
+
     func testGenerateNotesPreservesGeneratedTopHeading() async {
         let (root, notes) = makeTempDirs()
         let (controller, coordinator) = makeController(root: root)
@@ -1046,6 +1070,72 @@ final class NotesControllerTests: XCTestCase {
         XCTAssertEqual(controller.state.selectedMeetingFamily?.title, "Weekly Sync")
         XCTAssertEqual(controller.state.meetingHistoryEntries.map(\.session.id), ["current", "older"])
         XCTAssertTrue(controller.state.loadedTranscript.isEmpty)
+    }
+
+    func testShowMeetingFamilyAfterSelectingSessionClearsFocusedSessionState() async {
+        let (root, _) = makeTempDirs()
+        let (controller, coordinator) = makeController(root: root)
+
+        await seedSession(coordinator: coordinator, sessionID: "weekly", title: "Weekly Sync")
+        await controller.loadHistory()
+
+        controller.selectSession("weekly")
+        try? await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(controller.state.selectedSessionID, "weekly")
+        XCTAssertFalse(controller.state.loadedTranscript.isEmpty)
+
+        let upcomingEvent = CalendarEvent(
+            id: "evt_weekly_future",
+            title: "Weekly Sync",
+            startDate: Date(timeIntervalSince1970: 1_800_000_000),
+            endDate: Date(timeIntervalSince1970: 1_800_000_900),
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+
+        controller.showMeetingFamily(for: upcomingEvent)
+        try? await Task.sleep(for: .milliseconds(250))
+
+        XCTAssertNil(controller.state.selectedSessionID)
+        XCTAssertEqual(controller.state.selectedMeetingFamily?.upcomingEvent?.id, upcomingEvent.id)
+        XCTAssertTrue(controller.state.loadedTranscript.isEmpty)
+        XCTAssertNil(controller.state.loadedNotes)
+        XCTAssertEqual(controller.state.meetingHistoryEntries.map(\.session.id), ["weekly"])
+    }
+
+    func testSelectSessionSwitchesMeetingFamilyWhenSelectionChangesAcrossSeries() async {
+        let (root, _) = makeTempDirs()
+        let (controller, coordinator) = makeController(root: root)
+
+        await seedSession(coordinator: coordinator, sessionID: "weekly", title: "Weekly Sync")
+        await seedSession(coordinator: coordinator, sessionID: "design", title: "Design Review")
+        await controller.loadHistory()
+
+        let upcomingEvent = CalendarEvent(
+            id: "evt_weekly_browser",
+            title: "Weekly Sync",
+            startDate: Date(timeIntervalSince1970: 1_800_000_000),
+            endDate: Date(timeIntervalSince1970: 1_800_000_900),
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+
+        controller.showMeetingFamily(for: upcomingEvent)
+        try? await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(controller.state.selectedMeetingFamily?.title, "Weekly Sync")
+        XCTAssertNil(controller.state.selectedSessionID)
+
+        controller.selectSession("design")
+        try? await Task.sleep(for: .milliseconds(250))
+
+        XCTAssertEqual(controller.state.selectedSessionID, "design")
+        XCTAssertEqual(controller.state.selectedMeetingFamily?.title, "Design Review")
+        XCTAssertEqual(controller.state.meetingHistoryEntries.map(\.session.id), ["design"])
+        XCTAssertFalse(controller.state.loadedTranscript.isEmpty)
     }
 
     func testSelectSessionUsesMeetingFamilyTemplatePreferenceInsteadOfGenericTemplate() async {

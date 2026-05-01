@@ -25,8 +25,41 @@ final class AppCoordinator {
             case clearSelection
         }
 
+        enum Consumer: Equatable {
+            case mainWindow
+            case standaloneWindow
+        }
+
         let id = UUID()
         let target: Target
+        let consumer: Consumer
+    }
+
+    struct MainWindowBrowserSelection: Equatable {
+        enum Target: Equatable {
+            case meetingFamily(CalendarEvent)
+            case session(String)
+        }
+
+        let target: Target
+
+        var stableID: String {
+            switch target {
+            case .meetingFamily(let event):
+                return "meeting-family:\(event.id)"
+            case .session(let sessionID):
+                return "session:\(sessionID)"
+            }
+        }
+
+        var calendarEventID: String? {
+            switch target {
+            case .meetingFamily(let event):
+                return event.id
+            case .session:
+                return nil
+            }
+        }
     }
 
     @ObservationIgnored private let _sessionRepository: SessionRepository
@@ -72,6 +105,12 @@ final class AppCoordinator {
     var requestedNotesNavigation: NotesNavigationRequest? {
         get { access(keyPath: \.requestedNotesNavigation); return _requestedNotesNavigation }
         set { withMutation(keyPath: \.requestedNotesNavigation) { _requestedNotesNavigation = newValue } }
+    }
+
+    @ObservationIgnored nonisolated(unsafe) private var _mainWindowBrowserSelection: MainWindowBrowserSelection?
+    var mainWindowBrowserSelection: MainWindowBrowserSelection? {
+        get { access(keyPath: \.mainWindowBrowserSelection); return _mainWindowBrowserSelection }
+        set { withMutation(keyPath: \.mainWindowBrowserSelection) { _mainWindowBrowserSelection = newValue } }
     }
 
     var isRecording: Bool {
@@ -240,27 +279,54 @@ final class AppCoordinator {
         pendingExternalCommand = nil
     }
 
-    func queueSessionSelection(_ sessionID: String?) {
+    func queueSessionSelection(
+        _ sessionID: String?,
+        consumer: NotesNavigationRequest.Consumer = .mainWindow
+    ) {
         if let sessionID {
-            requestedNotesNavigation = NotesNavigationRequest(target: .session(sessionID))
+            requestedNotesNavigation = NotesNavigationRequest(target: .session(sessionID), consumer: consumer)
         } else {
-            requestedNotesNavigation = NotesNavigationRequest(target: .clearSelection)
+            requestedNotesNavigation = NotesNavigationRequest(target: .clearSelection, consumer: consumer)
         }
     }
 
-    func queueSessionRetranscription(_ sessionID: String) {
-        requestedNotesNavigation = NotesNavigationRequest(target: .retranscribeSession(sessionID))
+    func queueSessionRetranscription(
+        _ sessionID: String,
+        consumer: NotesNavigationRequest.Consumer = .mainWindow
+    ) {
+        requestedNotesNavigation = NotesNavigationRequest(target: .retranscribeSession(sessionID), consumer: consumer)
     }
 
-    func queueMeetingHistory(_ event: CalendarEvent) {
-        requestedNotesNavigation = NotesNavigationRequest(target: .meetingHistory(event))
+    func queueMeetingHistory(
+        _ event: CalendarEvent,
+        consumer: NotesNavigationRequest.Consumer = .mainWindow
+    ) {
+        requestedNotesNavigation = NotesNavigationRequest(target: .meetingHistory(event), consumer: consumer)
     }
 
-    func queueManualTranscript(_ event: CalendarEvent) {
-        requestedNotesNavigation = NotesNavigationRequest(target: .manualTranscript(event))
+    func queueManualTranscript(
+        _ event: CalendarEvent,
+        consumer: NotesNavigationRequest.Consumer = .mainWindow
+    ) {
+        requestedNotesNavigation = NotesNavigationRequest(target: .manualTranscript(event), consumer: consumer)
     }
 
-    func consumeRequestedSessionSelection() -> NotesNavigationRequest.Target? {
+    func selectMainWindowMeetingFamily(_ event: CalendarEvent) {
+        mainWindowBrowserSelection = MainWindowBrowserSelection(target: .meetingFamily(event))
+    }
+
+    func selectMainWindowSession(_ sessionID: String) {
+        mainWindowBrowserSelection = MainWindowBrowserSelection(target: .session(sessionID))
+    }
+
+    func collapseMainWindowBrowser() {
+        mainWindowBrowserSelection = nil
+    }
+
+    func consumeRequestedSessionSelection(
+        for consumer: NotesNavigationRequest.Consumer = .mainWindow
+    ) -> NotesNavigationRequest.Target? {
+        guard requestedNotesNavigation?.consumer == consumer else { return nil }
         defer { requestedNotesNavigation = nil }
         return requestedNotesNavigation?.target
     }

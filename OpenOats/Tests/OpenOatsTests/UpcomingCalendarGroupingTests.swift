@@ -271,6 +271,132 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
         XCTAssertEqual(groups[1].events.map(\.id), ["future"])
     }
 
+    func testSavedHistorySelectionOmitsTodayAndKeepsNewestSessionsFirst() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let referenceDate = makeDate(year: 2026, month: 4, day: 24, hour: 17, minute: 0, calendar: calendar)
+        let sessions = [
+            makeSession(
+                id: "today",
+                title: "Today Sync",
+                startedAt: makeDate(year: 2026, month: 4, day: 24, hour: 9, minute: 0, calendar: calendar),
+                utteranceCount: 4
+            ),
+            makeSession(
+                id: "yesterday-late",
+                title: "Yesterday Review",
+                startedAt: makeDate(year: 2026, month: 4, day: 23, hour: 16, minute: 30, calendar: calendar),
+                utteranceCount: 8
+            ),
+            makeSession(
+                id: "yesterday-early",
+                title: "Yesterday Standup",
+                startedAt: makeDate(year: 2026, month: 4, day: 23, hour: 9, minute: 0, calendar: calendar),
+                utteranceCount: 3
+            ),
+            makeSession(
+                id: "older",
+                title: "Older Planning",
+                startedAt: makeDate(year: 2026, month: 4, day: 20, hour: 12, minute: 0, calendar: calendar),
+                utteranceCount: 6
+            ),
+        ]
+
+        let selected = IdleDashboardHistorySelection.select(
+            from: sessions,
+            referenceDate: referenceDate,
+            calendar: calendar,
+            limit: 10
+        )
+
+        XCTAssertEqual(selected.map(\.id), ["yesterday-late", "yesterday-early", "older"])
+    }
+
+    func testSavedHistoryGroupingSortsDaysAndSessionsNewestFirst() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        let sessions = [
+            makeSession(
+                id: "older-day",
+                title: "Monday Planning",
+                startedAt: makeDate(year: 2026, month: 4, day: 20, hour: 11, minute: 0, calendar: calendar),
+                utteranceCount: 5
+            ),
+            makeSession(
+                id: "same-day-earlier",
+                title: "Tuesday Standup",
+                startedAt: makeDate(year: 2026, month: 4, day: 21, hour: 9, minute: 0, calendar: calendar),
+                utteranceCount: 7
+            ),
+            makeSession(
+                id: "same-day-later",
+                title: "Tuesday Review",
+                startedAt: makeDate(year: 2026, month: 4, day: 21, hour: 16, minute: 0, calendar: calendar),
+                utteranceCount: 9
+            ),
+        ]
+
+        let groups = UpcomingCalendarGrouping.groups(for: sessions, calendar: calendar)
+
+        XCTAssertEqual(groups.map { $0.sessions.map(\.id) }, [["same-day-later", "same-day-earlier"], ["older-day"]])
+    }
+
+    func testEndedEventWithUsableHistoryRoutesToMeetingHistory() {
+        let endedEvent = makeEvent(
+            id: "ended",
+            title: "Payment Ops",
+            start: Date(timeIntervalSince1970: 1_700_000_000),
+            duration: 60
+        )
+        let sessions = [
+            makeSession(
+                id: "saved",
+                title: "Payment Ops",
+                startedAt: endedEvent.startDate.addingTimeInterval(-86_400),
+                utteranceCount: 12,
+                hasNotes: true
+            ),
+        ]
+
+        let target = IdleDashboardNavigationResolver.target(
+            for: endedEvent,
+            sessionHistory: sessions,
+            aliases: [:],
+            now: endedEvent.endDate.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(target, .meetingHistory(endedEvent))
+    }
+
+    func testEndedEventWithoutUsableHistoryRoutesToManualTranscript() {
+        let endedEvent = makeEvent(
+            id: "ended",
+            title: "Design Review",
+            start: Date(timeIntervalSince1970: 1_700_100_000),
+            duration: 60
+        )
+        let sessions = [
+            makeSession(
+                id: "empty",
+                title: "Design Review",
+                startedAt: endedEvent.startDate.addingTimeInterval(-86_400),
+                utteranceCount: 0,
+                hasNotes: false
+            ),
+        ]
+
+        let target = IdleDashboardNavigationResolver.target(
+            for: endedEvent,
+            sessionHistory: sessions,
+            aliases: [:],
+            now: endedEvent.endDate.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(target, .manualTranscript(endedEvent))
+    }
+
     private func makeEvent(
         id: String,
         title: String,
@@ -293,6 +419,31 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
             participants: [],
             isOnlineMeeting: false,
             meetingURL: nil
+        )
+    }
+
+    private func makeSession(
+        id: String,
+        title: String,
+        startedAt: Date,
+        utteranceCount: Int,
+        hasNotes: Bool = false,
+        meetingFamilyKey: String? = nil
+    ) -> SessionIndex {
+        SessionIndex(
+            id: id,
+            startedAt: startedAt,
+            endedAt: nil,
+            templateSnapshot: nil,
+            title: title,
+            utteranceCount: utteranceCount,
+            hasNotes: hasNotes,
+            language: nil,
+            meetingApp: nil,
+            engine: nil,
+            tags: nil,
+            source: nil,
+            meetingFamilyKey: meetingFamilyKey
         )
     }
 

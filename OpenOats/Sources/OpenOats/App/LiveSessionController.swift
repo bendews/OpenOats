@@ -383,7 +383,10 @@ final class LiveSessionController {
             stopSession(settings: settings)
             handled = true
         case .openNotes(let sessionID):
-            coordinator.queueSessionSelection(sessionID)
+            let consumer: AppCoordinator.NotesNavigationRequest.Consumer = state.isRunning
+                ? .standaloneWindow
+                : .mainWindow
+            coordinator.queueSessionSelection(sessionID, consumer: consumer)
             openNotesWindow?()
             handled = true
         }
@@ -1080,7 +1083,9 @@ final class LiveSessionController {
     /// Called when minibar-visible state changes during recording.
     var onMiniBarContentUpdate: (() -> Void)?
 
-    /// Callback for opening the notes window — set by the view.
+    /// Callback for presenting meeting history. When the app is idle this routes to the
+    /// main window's embedded browser; during an active session it can intentionally fall
+    /// back to the standalone Notes window.
     var openNotesWindow: (() -> Void)?
 
     @MainActor

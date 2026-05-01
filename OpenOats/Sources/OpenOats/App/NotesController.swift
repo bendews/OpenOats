@@ -186,10 +186,12 @@ final class NotesController {
     /// Called when the Notes window appears. Loads history and handles pending navigation.
     /// Returns true if a deep-link session selection was consumed (caller should switch to notes tab).
     @discardableResult
-    func onAppear() async -> Bool {
+    func onAppear(
+        navigationConsumer: AppCoordinator.NotesNavigationRequest.Consumer = .mainWindow
+    ) async -> Bool {
         await loadHistory()
 
-        if let requested = coordinator.consumeRequestedSessionSelection() {
+        if let requested = coordinator.consumeRequestedSessionSelection(for: navigationConsumer) {
             switch requested {
             case .session(let sessionID):
                 selectSession(sessionID)
@@ -223,8 +225,10 @@ final class NotesController {
 
     /// React to a deep-link session selection request.
     /// Returns true if a request was consumed (caller may want to switch to notes tab).
-    func handleRequestedSessionSelection() -> Bool {
-        if let requested = coordinator.consumeRequestedSessionSelection() {
+    func handleRequestedSessionSelection(
+        for navigationConsumer: AppCoordinator.NotesNavigationRequest.Consumer = .mainWindow
+    ) -> Bool {
+        if let requested = coordinator.consumeRequestedSessionSelection(for: navigationConsumer) {
             switch requested {
             case .session(let sessionID):
                 selectSession(sessionID)

@@ -7,6 +7,35 @@ struct ContentView: View {
         case confirmDownload
     }
 
+    private enum MainWindowLayoutPhase: Equatable {
+        case compactTimeline
+        case expandedTimeline
+        case liveSession
+
+        var metrics: MainWindowMetrics {
+            switch self {
+            case .compactTimeline, .liveSession:
+                return MainWindowMetrics(
+                    minSize: OpenOatsRootApp.compactMainWindowMinSize,
+                    idealSize: OpenOatsRootApp.compactMainWindowIdealSize,
+                    maxSize: OpenOatsRootApp.compactMainWindowMaxSize
+                )
+            case .expandedTimeline:
+                return MainWindowMetrics(
+                    minSize: OpenOatsRootApp.expandedMainWindowMinSize,
+                    idealSize: OpenOatsRootApp.expandedMainWindowIdealSize,
+                    maxSize: OpenOatsRootApp.expandedMainWindowMaxSize
+                )
+            }
+        }
+    }
+
+    private struct MainWindowMetrics {
+        let minSize: NSSize
+        let idealSize: NSSize
+        let maxSize: NSSize
+    }
+
     @Bindable var settings: AppSettings
     @Environment(AppContainer.self) private var container
     @Environment(AppCoordinator.self) private var coordinator
@@ -14,6 +43,8 @@ struct ContentView: View {
     @State private var overlayManager = OverlayManager()
     @State private var miniBarManager = MiniBarManager()
     @State private var liveSessionController: LiveSessionController?
+    @State private var mainWindowNotesController: NotesController?
+    @State private var isMainWindowBrowserPresented = false
     @AppStorage("isTranscriptExpanded") private var isTranscriptExpanded = true
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @State private var showOnboarding = false
@@ -28,30 +59,69 @@ struct ContentView: View {
         let controllerState = liveSessionController?.state ?? LiveSessionState()
 
         return VStack(spacing: 0) {
-            // Compact header
             HStack {
                 Text("OpenOats")
                     .font(.system(size: 13, weight: .semibold))
 
                 Spacer()
 
-                Button {
-                    openWindow(id: "notes")
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "note.text")
-                            .font(.system(size: 11))
-                        Text("Past Meetings")
-                            .font(.system(size: 11))
+                if controllerState.isRunning {
+                    Button {
+                        openWindow(id: "notes")
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "note.text")
+                                .font(.system(size: 11))
+                            Text("Past Meetings")
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Open the standalone Notes window while recording")
+                    .accessibilityIdentifier("app.pastMeetingsButton")
+                } else if isMainWindowBrowserPresented {
+                    Button {
+                        collapseMainWindowBrowser()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("Timeline")
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Return to the compact timeline")
+                    .accessibilityIdentifier("app.timelineButton")
+                } else {
+                    Button {
+                        coordinator.queueSessionSelection(nil)
+                        previewMainWindowNavigationIfNeeded()
+                        presentMainWindowBrowser()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "note.text")
+                                .font(.system(size: 11))
+                            Text("Past Meetings")
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Browse upcoming meetings and saved history in the main window")
+                    .accessibilityIdentifier("app.pastMeetingsButton")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("View past meeting notes")
-                .accessibilityIdentifier("app.pastMeetingsButton")
 
                 SettingsLink {
                     Image(systemName: "gearshape")
@@ -68,8 +138,7 @@ struct ContentView: View {
 
             Divider()
 
-            // Post-session banner
-            if let lastSession = controllerState.lastEndedSession {
+            if let lastSession = controllerState.lastEndedSession, !isMainWindowBrowserPresented {
                 if lastSession.utteranceCount > 0 {
                     HStack {
                         Text(sessionEndedBannerText(for: lastSession))
@@ -79,7 +148,9 @@ struct ContentView: View {
                         Spacer()
                         if controllerState.lastSessionHasNotes {
                             Button {
-                                openWindow(id: "notes")
+                                coordinator.queueSessionSelection(lastSession.id)
+                                previewMainWindowNavigationIfNeeded()
+                                presentMainWindowBrowser()
                             } label: {
                                 Label("View Notes", systemImage: "doc.text")
                                     .font(.system(size: 12))
@@ -89,7 +160,9 @@ struct ContentView: View {
                             .accessibilityIdentifier("app.viewNotesButton")
                         } else {
                             Button {
-                                openWindow(id: "notes")
+                                coordinator.queueSessionSelection(lastSession.id)
+                                previewMainWindowNavigationIfNeeded()
+                                presentMainWindowBrowser()
                             } label: {
                                 Label("Generate Notes", systemImage: "sparkles")
                                     .font(.system(size: 12))
@@ -124,7 +197,8 @@ struct ContentView: View {
                         } else if controllerState.lastEndedSessionCanRetranscribe {
                             Button {
                                 coordinator.queueSessionRetranscription(lastSession.id)
-                                openWindow(id: "notes")
+                                previewMainWindowNavigationIfNeeded()
+                                presentMainWindowBrowser()
                             } label: {
                                 Label("Re-transcribe", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                                     .font(.system(size: 12))
@@ -135,7 +209,8 @@ struct ContentView: View {
                         }
                         Button {
                             coordinator.queueSessionSelection(lastSession.id)
-                            openWindow(id: "notes")
+                            previewMainWindowNavigationIfNeeded()
+                            presentMainWindowBrowser()
                         } label: {
                             Label("Open Session", systemImage: "arrow.right.circle")
                                 .font(.system(size: 12))
@@ -158,13 +233,15 @@ struct ContentView: View {
                 Divider()
             }
 
-            // Suggestion panel status
             if controllerState.isRunning {
+                let sidebarLabel = settings.sidebarMode == .sidecast ? "Sidecast" : "Suggestions"
+                let visibilityLabel = overlayManager.isVisible ? "visible" : "hidden"
+
                 HStack(spacing: 6) {
                     Circle()
                         .fill(controllerState.isGeneratingSuggestions ? Color.orange : Color.green)
                         .frame(width: 6, height: 6)
-                    Text("\(settings.sidebarMode == .sidecast ? "Sidecast" : "Suggestions") \(overlayManager.isVisible ? "visible" : "hidden")")
+                    Text(sidebarLabel + " " + visibilityLabel)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -186,7 +263,6 @@ struct ContentView: View {
             if controllerState.isRunning {
                 Spacer(minLength: 0)
 
-                // Collapsible transcript (hidden when live transcript is disabled)
                 if controllerState.showLiveTranscript {
                     DisclosureGroup(isExpanded: $isTranscriptExpanded) {
                         IsolatedTranscriptWrapper(state: controllerState)
@@ -240,13 +316,11 @@ struct ContentView: View {
                     )
                 )
             } else {
-                IdleHomeDashboardView(settings: settings)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                idleHomeShell
             }
 
             Divider()
 
-            // Bottom bar: live indicator + model
             IsolatedControlBarWrapper(
                 state: controllerState,
                 onToggle: {
@@ -266,9 +340,133 @@ struct ContentView: View {
         contentWithEventHandlers
     }
 
+    @ViewBuilder
+    private var idleHomeShell: some View {
+        if isMainWindowBrowserPresented {
+            HSplitView {
+                IdleHomeDashboardView(
+                    settings: settings,
+                    selectedTimelineSelection: coordinator.mainWindowBrowserSelection,
+                    onSelectTimelineEvent: selectTimelineEvent,
+                    onSelectSavedSession: selectSavedSession
+                )
+                .frame(minWidth: 300, idealWidth: 340, maxWidth: 420, maxHeight: .infinity, alignment: .topLeading)
+
+                mainWindowBrowserDetailPane
+                    .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+        } else {
+            IdleHomeDashboardView(
+                settings: settings,
+                selectedTimelineSelection: nil,
+                onSelectTimelineEvent: selectTimelineEvent,
+                onSelectSavedSession: selectSavedSession
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var mainWindowBrowserDetailPane: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(mainWindowBrowserLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                    Text(mainWindowBrowserTitle)
+                        .font(.system(size: 20, weight: .semibold))
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 12)
+
+                Button {
+                    collapseMainWindowBrowser()
+                } label: {
+                    Label("Collapse", systemImage: "sidebar.right")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("mainWindow.detail.collapse")
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 14)
+
+            Divider()
+
+            Group {
+                if let mainWindowNotesController {
+                    NotesView(
+                        settings: settings,
+                        layoutMode: .detailOnly,
+                        navigationConsumer: .mainWindow,
+                        controller: mainWindowNotesController
+                    )
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.45))
+    }
+
+    private var mainWindowBrowserLabel: String {
+        guard let selection = coordinator.mainWindowBrowserSelection else {
+            return "Meeting browser"
+        }
+
+        switch selection.target {
+        case .meetingFamily(let event):
+            return mainWindowEventStatus(for: event).label
+        case .session:
+            return "Saved meeting"
+        }
+    }
+
+    private var mainWindowBrowserTitle: String {
+        guard let selection = coordinator.mainWindowBrowserSelection else {
+            return "Select a meeting"
+        }
+
+        switch selection.target {
+        case .meetingFamily(let event):
+            return event.title
+        case .session(let sessionID):
+            let session = (mainWindowNotesController?.state.sessionHistory ?? coordinator.sessionHistory)
+                .first(where: { $0.id == sessionID })
+            let trimmedTitle = session?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmedTitle?.isEmpty == false ? trimmedTitle : nil) ?? "Untitled"
+        }
+    }
+
+    private func mainWindowEventStatus(for event: CalendarEvent) -> (label: String, systemImage: String) {
+        let now = Date()
+        if event.endDate <= now {
+            return ("Past meeting", "clock.arrow.trianglehead.counterclockwise.rotate.90")
+        }
+        if event.startDate <= now {
+            return ("Meeting in progress", "dot.radiowaves.left.and.right")
+        }
+        return ("Upcoming meeting", "calendar.badge.clock")
+    }
+
     private var sizedRootContent: some View {
-        rootContent
-            .frame(minWidth: 360, maxWidth: 600, minHeight: 400)
+        let metrics = windowLayoutPhase.metrics
+
+        return rootContent
+            .frame(
+                minWidth: metrics.minSize.width,
+                idealWidth: metrics.idealSize.width,
+                maxWidth: metrics.maxSize.width,
+                minHeight: metrics.minSize.height,
+                idealHeight: metrics.idealSize.height,
+                maxHeight: metrics.maxSize.height
+            )
             .background(.ultraThinMaterial)
     }
 
@@ -293,6 +491,12 @@ struct ContentView: View {
 
     private var contentWithLifecycle: some View {
         contentWithOverlay
+        .onAppear {
+            syncMainWindowLayout(windowLayoutPhase)
+        }
+        .onChange(of: windowLayoutPhase) { _, phase in
+            syncMainWindowLayout(phase)
+        }
         .onChange(of: showOnboarding) { _, isShowing in
             if !isShowing {
                 hasCompletedOnboarding = true
@@ -309,7 +513,6 @@ struct ContentView: View {
                 showOnboarding = true
             }
 
-            // Create and wire the controller
             let controller = LiveSessionController(coordinator: coordinator, container: container)
             controller.onRunningStateChanged = { [weak miniBarManager, weak overlayManager] isRunning in
                 if isRunning {
@@ -320,7 +523,6 @@ struct ContentView: View {
                         }
                     }
                     showMiniBar(controller: controller, miniBarManager: miniBarManager)
-                    // Start the selected realtime sidebar and show the overlay.
                     if settings.sidebarMode == .classicSuggestions {
                         coordinator.suggestionEngine?.startPreFetching()
                     }
@@ -329,13 +531,16 @@ struct ContentView: View {
                     }
                 } else {
                     miniBarManager?.hide()
-                    // Stop the classic pre-fetcher and hide the panel after delay.
                     coordinator.suggestionEngine?.stopPreFetching()
                     overlayManager?.hideAfterDelay(seconds: 2)
                 }
             }
-            controller.openNotesWindow = {
-                openWindow(id: "notes")
+            controller.openNotesWindow = { [weak controller] in
+                if controller?.state.isRunning == true {
+                    openWindow(id: "notes")
+                } else {
+                    presentMainWindowBrowser()
+                }
             }
             controller.onMiniBarContentUpdate = { [weak controller, weak miniBarManager] in
                 showMiniBar(controller: controller, miniBarManager: miniBarManager)
@@ -346,22 +551,29 @@ struct ContentView: View {
             overlayManager.defaults = container.defaults
             miniBarManager.defaults = container.defaults
             await container.seedIfNeeded(coordinator: coordinator)
+            await coordinator.loadHistory()
+            await ensureMainWindowNotesControllerLoaded()
+            previewMainWindowNavigationIfNeeded()
+            if coordinator.requestedNotesNavigation?.consumer == .mainWindow, !controller.state.isRunning {
+                isMainWindowBrowserPresented = true
+            }
             controller.handlePendingExternalCommandIfPossible(settings: settings) {
-                openWindow(id: "notes")
+                if controller.state.isRunning {
+                    openWindow(id: "notes")
+                } else {
+                    presentMainWindowBrowser()
+                }
             }
 
             await controller.performInitialSetup()
 
-            // Setup calendar integration if enabled
             container.updateCalendarIntegration(enabled: settings.calendarIntegrationEnabled)
 
-            // Setup meeting detection if enabled
             if settings.meetingAutoDetectEnabled {
                 container.enableDetection(settings: settings, coordinator: coordinator)
                 await container.detectionController?.evaluateImmediate()
             }
 
-            // Start the 100ms polling loop (runs until task cancelled)
             await controller.runPollingLoop(settings: settings)
         }
         .onChange(of: settings.meetingAutoDetectEnabled) {
@@ -394,16 +606,142 @@ struct ContentView: View {
     private var contentWithEventHandlers: some View {
         contentWithLifecycle
         .onKeyPress(.escape) {
-            overlayManager.hide()
-            return .handled
+            if overlayManager.isVisible {
+                overlayManager.hide()
+                return .handled
+            }
+            if isMainWindowBrowserPresented {
+                collapseMainWindowBrowser()
+                return .handled
+            }
+            return .ignored
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleSuggestionPanel)) { _ in
             toggleOverlay()
+        }
+        .onChange(of: coordinator.requestedNotesNavigation?.id) { _, requestID in
+            guard requestID != nil,
+                  coordinator.requestedNotesNavigation?.consumer == .mainWindow,
+                  !(liveSessionController?.state.isRunning ?? false) else { return }
+            previewMainWindowNavigationIfNeeded()
+            presentMainWindowBrowser()
         }
         .onChange(of: pendingControlBarAction) {
             guard let action = pendingControlBarAction else { return }
             pendingControlBarAction = nil
             handleControlBarAction(action)
+        }
+    }
+
+    private var windowLayoutPhase: MainWindowLayoutPhase {
+        guard !(liveSessionController?.state.isRunning ?? false) else {
+            return .liveSession
+        }
+        return isMainWindowBrowserPresented ? .expandedTimeline : .compactTimeline
+    }
+
+    @MainActor
+    private func ensureMainWindowNotesControllerLoaded() async {
+        guard mainWindowNotesController == nil else { return }
+        let controller = NotesController(coordinator: coordinator, settings: settings)
+        mainWindowNotesController = controller
+        await controller.loadHistory()
+    }
+
+    @MainActor
+    private func syncMainWindowLayout(_ phase: MainWindowLayoutPhase) {
+        guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == OpenOatsRootApp.mainWindowID }) else {
+            return
+        }
+
+        let metrics = phase.metrics
+        window.contentMinSize = metrics.minSize
+        window.contentMaxSize = metrics.maxSize
+
+        let currentSize = window.contentLayoutRect.size
+        let targetWidth: CGFloat
+        switch phase {
+        case .expandedTimeline:
+            targetWidth = max(currentSize.width, metrics.idealSize.width)
+        case .compactTimeline, .liveSession:
+            targetWidth = min(currentSize.width, metrics.idealSize.width)
+        }
+
+        let targetSize = NSSize(
+            width: min(max(targetWidth, metrics.minSize.width), metrics.maxSize.width),
+            height: min(max(currentSize.height, metrics.minSize.height), metrics.maxSize.height)
+        )
+
+        guard abs(targetSize.width - currentSize.width) > 0.5
+            || abs(targetSize.height - currentSize.height) > 0.5 else {
+            return
+        }
+
+        window.setContentSize(targetSize)
+    }
+
+    @MainActor
+    private func presentMainWindowBrowser() {
+        isMainWindowBrowserPresented = true
+        focusMainWindow()
+    }
+
+    @MainActor
+    private func collapseMainWindowBrowser() {
+        isMainWindowBrowserPresented = false
+        coordinator.collapseMainWindowBrowser()
+        mainWindowNotesController?.selectSession(nil)
+    }
+
+    @MainActor
+    private func previewMainWindowNavigationIfNeeded() {
+        guard let request = coordinator.requestedNotesNavigation, request.consumer == .mainWindow else {
+            return
+        }
+
+        switch request.target {
+        case .session(let sessionID), .retranscribeSession(let sessionID):
+            coordinator.selectMainWindowSession(sessionID)
+        case .meetingHistory(let event), .manualTranscript(let event):
+            coordinator.selectMainWindowMeetingFamily(event)
+        case .clearSelection:
+            coordinator.collapseMainWindowBrowser()
+        }
+    }
+
+    private func selectTimelineEvent(_ event: CalendarEvent) {
+        let target = IdleDashboardNavigationResolver.target(
+            for: event,
+            sessionHistory: mainWindowNotesController?.state.sessionHistory ?? coordinator.sessionHistory,
+            aliases: settings.meetingHistoryAliasesByKey,
+            now: Date()
+        )
+
+        switch target {
+        case .session(let sessionID):
+            coordinator.queueSessionSelection(sessionID)
+        case .meetingHistory(let resolvedEvent):
+            coordinator.queueMeetingHistory(resolvedEvent)
+        case .manualTranscript(let resolvedEvent):
+            coordinator.queueManualTranscript(resolvedEvent)
+        }
+
+        previewMainWindowNavigationIfNeeded()
+        presentMainWindowBrowser()
+    }
+
+    private func selectSavedSession(_ session: SessionIndex) {
+        coordinator.queueSessionSelection(session.id)
+        previewMainWindowNavigationIfNeeded()
+        presentMainWindowBrowser()
+    }
+
+    @MainActor
+    private func focusMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == OpenOatsRootApp.mainWindowID }) {
+            window.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -482,9 +820,9 @@ struct ContentView: View {
 
     private func sessionEndedBannerText(for session: SessionIndex) -> String {
         if let recovery = session.transcriptRecovery {
-            return "\(recovery.sessionEndedBannerText) \u{00B7} \(session.utteranceCount) utterances"
+            return "\(recovery.sessionEndedBannerText) · \(session.utteranceCount) utterances"
         }
-        return "Session ended \u{00B7} \(session.utteranceCount) utterances"
+        return "Session ended · \(session.utteranceCount) utterances"
     }
 }
 
@@ -524,7 +862,7 @@ private struct ScratchpadSection: View {
 
 private struct IsolatedTranscriptWrapper: View {
     let state: LiveSessionState
-    
+
     var body: some View {
         TranscriptView(
             utterances: state.liveTranscript,
@@ -539,7 +877,7 @@ private struct IsolatedControlBarWrapper: View {
     let onToggle: () -> Void
     let onMuteToggle: () -> Void
     let onConfirmDownload: () -> Void
-    
+
     var body: some View {
         ControlBar(
             isRunning: state.isRunning,

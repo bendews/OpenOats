@@ -3,7 +3,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct NotesView: View {
+    enum LayoutMode {
+        case fullWindow
+        case detailOnly
+    }
+
     @Bindable var settings: AppSettings
+    let layoutMode: LayoutMode
+    let navigationConsumer: AppCoordinator.NotesNavigationRequest.Consumer
     @Environment(AppContainer.self) private var container
     @Environment(AppCoordinator.self) private var coordinator
     @Environment(\.openWindow) private var openWindow
@@ -57,9 +64,23 @@ struct NotesView: View {
         let existingMeetingCount: Int
     }
 
+    private let providedController: NotesController?
+
+    init(
+        settings: AppSettings,
+        layoutMode: LayoutMode = .fullWindow,
+        navigationConsumer: AppCoordinator.NotesNavigationRequest.Consumer = .standaloneWindow,
+        controller: NotesController? = nil
+    ) {
+        self.settings = settings
+        self.layoutMode = layoutMode
+        self.navigationConsumer = navigationConsumer
+        self.providedController = controller
+    }
+
     var body: some View {
         Group {
-            if let controller = notesController {
+            if let controller = activeController {
                 mainContent(controller: controller)
             } else {
                 ProgressView()
@@ -69,16 +90,40 @@ struct NotesView: View {
             if coordinator.knowledgeBase == nil {
                 container.ensureViewServicesInitialized(settings: settings, coordinator: coordinator)
             }
+
+            if let providedController {
+                notesController = providedController
+                if providedController.state.sessionHistory.isEmpty {
+                    await providedController.loadHistory()
+                }
+
+                if await handleRequestedNotesNavigation(controller: providedController) {
+                    return
+                }
+                if layoutMode == .fullWindow,
+                   providedController.state.selectedSessionID == nil,
+                   providedController.state.selectedMeetingFamily == nil,
+                   let last = coordinator.lastEndedSession {
+                    providedController.selectSession(last.id)
+                }
+                return
+            }
+
             let controller = NotesController(coordinator: coordinator, settings: settings)
             notesController = controller
             await controller.loadHistory()
 
             if await handleRequestedNotesNavigation(controller: controller) {
                 return
-            } else if let last = coordinator.lastEndedSession {
+            }
+            if layoutMode == .fullWindow, let last = coordinator.lastEndedSession {
                 controller.selectSession(last.id)
             }
         }
+    }
+
+    private var activeController: NotesController? {
+        providedController ?? notesController
     }
 
     @ViewBuilder
@@ -155,12 +200,20 @@ struct NotesView: View {
 
     @ViewBuilder
     private func mainLayout(controller: NotesController, state: NotesState) -> some View {
-        HStack(spacing: 0) {
-            sidebar(controller: controller, state: state)
-                .frame(width: 250)
-            Divider()
-            detailContent(controller: controller, state: state)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            switch layoutMode {
+            case .fullWindow:
+                HStack(spacing: 0) {
+                    sidebar(controller: controller, state: state)
+                        .frame(width: 250)
+                    Divider()
+                    detailContent(controller: controller, state: state)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            case .detailOnly:
+                detailContent(controller: controller, state: state)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .onChange(of: coordinator.lastEndedSession?.id) {
             Task { await controller.handleLastEndedSessionChanged() }
@@ -177,11 +230,23 @@ struct NotesView: View {
             meetingFamilyBottomTab = .history
             isMeetingFamilyBottomCollapsed = false
             pendingMeetingFamilyFolderChange = nil
+            if layoutMode == .detailOnly,
+               controller.state.selectedSessionID == nil,
+               state.selectedMeetingFamily != nil {
+                detailViewMode = .notes
+            }
         }
         .onChange(of: controller.state.selectedSessionID) {
             appleNotesSyncState = .idle
             let sid = controller.state.selectedSessionID
             appleNotesLastSyncDate = sid.flatMap { AppleNotesService.lastSyncDate(for: $0) }
+            guard layoutMode == .detailOnly else { return }
+            if let sid,
+               let session = controller.state.sessionHistory.first(where: { $0.id == sid }) {
+                detailViewMode = session.hasNotes ? .notes : .transcript
+            } else if controller.state.selectedMeetingFamily != nil {
+                detailViewMode = .notes
+            }
         }
     }
 
@@ -1045,7 +1110,20 @@ struct NotesView: View {
         if let selection = state.selectedMeetingFamily {
             meetingFamilyDetail(controller: controller, state: state, selection: selection)
         } else {
-            ContentUnavailableView("Select a Session", systemImage: "doc.text", description: Text("Choose a session from the sidebar to view or generate notes."))
+            switch layoutMode {
+            case .fullWindow:
+                ContentUnavailableView(
+                    "Select a Session",
+                    systemImage: "doc.text",
+                    description: Text("Choose a session from the sidebar to view or generate notes.")
+                )
+            case .detailOnly:
+                ContentUnavailableView(
+                    "Select a Meeting",
+                    systemImage: "calendar",
+                    description: Text("Choose an upcoming or saved meeting to inspect it without leaving the main window.")
+                )
+            }
         }
     }
 
@@ -3203,7 +3281,7 @@ struct NotesView: View {
 
     @MainActor
     private func handleRequestedNotesNavigation(controller: NotesController) async -> Bool {
-        guard let requested = coordinator.consumeRequestedSessionSelection() else { return false }
+        guard let requested = coordinator.consumeRequestedSessionSelection(for: navigationConsumer) else { return false }
 
         switch requested {
         case .session(let sessionID):

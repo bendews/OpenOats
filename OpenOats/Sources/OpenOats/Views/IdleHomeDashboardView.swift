@@ -3,9 +3,12 @@ import SwiftUI
 
 struct IdleHomeDashboardView: View {
     @Bindable var settings: AppSettings
+    let selectedTimelineSelection: AppCoordinator.MainWindowBrowserSelection?
+    let onSelectTimelineEvent: (CalendarEvent) -> Void
+    let onSelectSavedSession: (SessionIndex) -> Void
+
     @Environment(AppContainer.self) private var container
     @Environment(AppCoordinator.self) private var coordinator
-    @Environment(\.openWindow) private var openWindow
 
     @State private var events: [CalendarEvent] = []
     @State private var earlierTodayEvents: [CalendarEvent] = []
@@ -28,7 +31,7 @@ struct IdleHomeDashboardView: View {
         let accessState = currentAccessState
 
         VStack(alignment: .leading, spacing: 8) {
-            Text("Coming up")
+            Text("Timeline")
                 .font(.system(size: 24, weight: .semibold))
 
             comingUpCard(accessState: accessState)
@@ -84,28 +87,16 @@ struct IdleHomeDashboardView: View {
 
     @ViewBuilder
     private func comingUpCard(accessState: CalendarManager.AccessState) -> some View {
+        let savedHistoryGroups = UpcomingCalendarGrouping.groups(for: savedHistorySessions)
+
         Group {
-            if !settings.calendarIntegrationEnabled {
-                disabledCalendarCard
+            if savedHistoryGroups.isEmpty {
+                calendarTimelineSection(accessState: accessState)
             } else {
-                switch accessState {
-                case .authorized:
-                    if events.isEmpty && earlierTodayEvents.isEmpty {
-                        emptyStateCard(
-                            title: "No upcoming meetings",
-                            description: "OpenOats will show your next calendar meetings here."
-                        )
-                    } else {
-                        upcomingMeetingsCard
-                    }
-                case .denied:
-                    deniedCalendarCard
-                case .notDetermined:
-                    emptyStateCard(
-                        title: "Waiting for calendar access",
-                        description: "OpenOats will show your upcoming meetings once Calendar access is granted."
-                    )
-                }
+                timelineScrollContent(
+                    accessState: accessState,
+                    savedHistoryGroups: savedHistoryGroups
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -118,6 +109,56 @@ struct IdleHomeDashboardView: View {
             RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(.quaternary, lineWidth: 1)
         )
+    }
+
+    private var savedHistorySessions: [SessionIndex] {
+        IdleDashboardHistorySelection.select(
+            from: coordinator.sessionHistory,
+            referenceDate: Date()
+        )
+    }
+
+    private func timelineScrollContent(
+        accessState: CalendarManager.AccessState,
+        savedHistoryGroups: [UpcomingCalendarGrouping.SessionDayGroup]
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                calendarTimelineSection(accessState: accessState)
+
+                Divider()
+
+                savedMeetingHistorySection(groups: savedHistoryGroups)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .scrollIndicators(.visible)
+    }
+
+    @ViewBuilder
+    private func calendarTimelineSection(accessState: CalendarManager.AccessState) -> some View {
+        if !settings.calendarIntegrationEnabled {
+            disabledCalendarCard
+        } else {
+            switch accessState {
+            case .authorized:
+                if events.isEmpty && earlierTodayEvents.isEmpty {
+                    emptyStateCard(
+                        title: "No upcoming meetings",
+                        description: "OpenOats will show your next calendar meetings here."
+                    )
+                } else {
+                    upcomingMeetingsCard
+                }
+            case .denied:
+                deniedCalendarCard
+            case .notDetermined:
+                emptyStateCard(
+                    title: "Waiting for calendar access",
+                    description: "OpenOats will show your upcoming meetings once Calendar access is granted."
+                )
+            }
+        }
     }
 
     private var disabledCalendarCard: some View {
@@ -169,14 +210,56 @@ struct IdleHomeDashboardView: View {
                     showCalendarTitle: shouldShowCalendarTitle,
                     settings: settings,
                     sessionHistory: coordinator.sessionHistory,
+                    selectedTimelineSelection: selectedTimelineSelection,
                     earlierTodayEvents: Calendar.current.isDateInToday(group.date) ? earlierTodayEvents : [],
                     showsEarlierToday: Calendar.current.isDateInToday(group.date) ? showsEarlierToday : false,
                     onToggleEarlierToday: { showsEarlierToday.toggle() },
                     onJoinEvent: joinMeeting(for:),
-                    onOpenRelatedNotes: openRelatedNotes(for:),
+                    onSelectTimelineEvent: onSelectTimelineEvent,
                     onRequestMeetingFamilyFolderChange: requestMeetingFamilyFolderChange(_:for:),
                     onCreateFolder: beginCreateFolder(for:)
                 )
+                if index < groups.count - 1 {
+                    Divider()
+                        .padding(.top, 2)
+                }
+            }
+        }
+    }
+
+    private func savedMeetingHistorySection(
+        groups: [UpcomingCalendarGrouping.SessionDayGroup]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Saved history")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+
+            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(group.sectionTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(group.sessions) { session in
+                            SavedMeetingHistoryRow(
+                                session: session,
+                                isSelected: {
+                                    guard let selectedTimelineSelection else { return false }
+                                    if case .session(let selectedSessionID) = selectedTimelineSelection.target {
+                                        return selectedSessionID == session.id
+                                    }
+                                    return false
+                                }(),
+                                onOpenSession: onSelectSavedSession
+                            )
+                        }
+                    }
+                }
+
                 if index < groups.count - 1 {
                     Divider()
                         .padding(.top, 2)
@@ -290,15 +373,6 @@ struct IdleHomeDashboardView: View {
     private func joinMeeting(for event: CalendarEvent) {
         guard let url = event.meetingURL else { return }
         _ = NSWorkspace.shared.open(url)
-    }
-
-    private func openRelatedNotes(for event: CalendarEvent) {
-        if event.endDate <= Date() {
-            coordinator.queueManualTranscript(event)
-        } else {
-            coordinator.queueMeetingHistory(event)
-        }
-        openWindow(id: "notes")
     }
 
     private func beginCreateFolder(for event: CalendarEvent) {
@@ -531,11 +605,12 @@ private struct ComingUpDayGroupView: View {
     let showCalendarTitle: Bool
     let settings: AppSettings
     let sessionHistory: [SessionIndex]
+    let selectedTimelineSelection: AppCoordinator.MainWindowBrowserSelection?
     let earlierTodayEvents: [CalendarEvent]
     let showsEarlierToday: Bool
     let onToggleEarlierToday: () -> Void
     let onJoinEvent: (CalendarEvent) -> Void
-    let onOpenRelatedNotes: (CalendarEvent) -> Void
+    let onSelectTimelineEvent: (CalendarEvent) -> Void
     let onRequestMeetingFamilyFolderChange: (String?, CalendarEvent) -> Void
     let onCreateFolder: (CalendarEvent) -> Void
 
@@ -558,8 +633,9 @@ private struct ComingUpDayGroupView: View {
                         showCalendarTitle: showCalendarTitle,
                         settings: settings,
                         sessionHistory: sessionHistory,
+                        isSelected: selectedTimelineSelection?.calendarEventID == event.id,
                         onJoinEvent: onJoinEvent,
-                        onOpenRelatedNotes: onOpenRelatedNotes,
+                        onSelectTimelineEvent: onSelectTimelineEvent,
                         onRequestMeetingFamilyFolderChange: onRequestMeetingFamilyFolderChange,
                         onCreateFolder: onCreateFolder
                     )
@@ -609,8 +685,9 @@ private struct ComingUpDayGroupView: View {
                             showCalendarTitle: showCalendarTitle,
                             settings: settings,
                             sessionHistory: sessionHistory,
+                            isSelected: selectedTimelineSelection?.calendarEventID == event.id,
                             onJoinEvent: onJoinEvent,
-                            onOpenRelatedNotes: onOpenRelatedNotes,
+                            onSelectTimelineEvent: onSelectTimelineEvent,
                             onRequestMeetingFamilyFolderChange: onRequestMeetingFamilyFolderChange,
                             onCreateFolder: onCreateFolder
                         )
@@ -643,17 +720,27 @@ private struct ComingUpEventRow: View {
     let showCalendarTitle: Bool
     let settings: AppSettings
     let sessionHistory: [SessionIndex]
+    let isSelected: Bool
     let onJoinEvent: (CalendarEvent) -> Void
-    let onOpenRelatedNotes: (CalendarEvent) -> Void
+    let onSelectTimelineEvent: (CalendarEvent) -> Void
     let onRequestMeetingFamilyFolderChange: (String?, CalendarEvent) -> Void
     let onCreateFolder: (CalendarEvent) -> Void
 
     @State private var isHovering = false
     @State private var isFolderHovering = false
+
+    private var historyAvailability: IdleDashboardHistoryAvailability {
+        IdleDashboardHistoryAvailability.summary(
+            for: event,
+            sessionHistory: sessionHistory,
+            aliases: settings.meetingHistoryAliasesByKey
+        )
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Button(action: {
-                onOpenRelatedNotes(event)
+                onSelectTimelineEvent(event)
             }) {
                 HStack(alignment: .top, spacing: 10) {
                     RoundedRectangle(cornerRadius: 2)
@@ -674,9 +761,10 @@ private struct ComingUpEventRow: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(
+                .background(rowBackground)
+                .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(isHovering ? Color.primary.opacity(0.05) : .clear)
+                        .stroke(isSelected ? Color.accentColor.opacity(0.35) : .clear, lineWidth: 1)
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 10))
             }
@@ -684,8 +772,17 @@ private struct ComingUpEventRow: View {
             .onHover { hovering in
                 isHovering = hovering
             }
-            .help("Open meeting history")
+            .help("Show meeting details")
             .accessibilityIdentifier("idle.comingUp.event.\(event.id)")
+
+            if historyAvailability.hasTranscriptableHistory {
+                TimelineStatusChip(
+                    text: historyAvailability.badgeText,
+                    systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90",
+                    tint: .accentColor
+                )
+                .help(historyAvailability.helpText)
+            }
 
             folderMenu
 
@@ -707,6 +804,15 @@ private struct ComingUpEventRow: View {
                 .accessibilityIdentifier("idle.comingUp.join.\(event.id)")
             }
         }
+    }
+
+    private var rowBackground: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(
+                isSelected
+                    ? Color.accentColor.opacity(0.12)
+                    : (isHovering ? Color.primary.opacity(0.05) : .clear)
+            )
     }
 
     private var folderMenu: some View {
@@ -887,6 +993,114 @@ private struct ComingUpEventRow: View {
     }
 }
 
+private struct TimelineStatusChip: View {
+    let text: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                Capsule()
+                    .fill(tint.opacity(0.12))
+            )
+    }
+}
+
+private struct SavedMeetingHistoryRow: View {
+    let session: SessionIndex
+    let isSelected: Bool
+    let onOpenSession: (SessionIndex) -> Void
+
+    @State private var isHovering = false
+
+    private var statusBadge: IdleDashboardHistoryAvailability.SessionStatusBadge {
+        IdleDashboardHistoryAvailability.statusBadge(for: session)
+    }
+
+    var body: some View {
+        Button(action: {
+            onOpenSession(session)
+        }) {
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(statusBadge.tint)
+                    .frame(width: 4, height: 34)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayTitle)
+                        .font(.system(size: 15, weight: .medium))
+                        .lineLimit(1)
+
+                    Text(secondaryLine)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                TimelineStatusChip(
+                    text: statusBadge.text,
+                    systemImage: statusBadge.systemImage,
+                    tint: statusBadge.tint
+                )
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(
+                        isSelected
+                            ? Color.accentColor.opacity(0.12)
+                            : (isHovering ? Color.primary.opacity(0.05) : .clear)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.35) : .clear, lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .help("Open saved meeting")
+        .accessibilityIdentifier("idle.history.session.\(session.id)")
+    }
+
+    private var displayTitle: String {
+        let trimmedTitle = session.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedTitle.isEmpty ? "Untitled" : trimmedTitle
+    }
+
+    private var secondaryLine: String {
+        var parts = [
+            Self.timeFormatter.string(from: session.startedAt),
+            IdleDashboardHistoryAvailability.transcriptStatusText(for: session),
+        ]
+
+        if let source = session.source?.trimmingCharacters(in: .whitespacesAndNewlines), !source.isEmpty {
+            parts.append(source.capitalized)
+        }
+
+        return parts.joined(separator: "  •  ")
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
+}
+
 extension CalendarColorCodec {
     static func color(from hex: String) -> Color? {
         let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1015,33 +1229,37 @@ enum UpcomingCalendarGrouping {
         }
 
         var sectionTitle: String {
-            let calendar = Calendar.current
-            if calendar.isDateInToday(date) {
-                return "Today"
-            }
-            if calendar.isDateInTomorrow(date) {
-                return "Tomorrow"
-            }
-            return "\(weekdayText), \(dayNumber) \(monthText)"
+            UpcomingCalendarGrouping.sectionTitle(for: date)
         }
 
-        private static let dayNumberFormatter: DateFormatter = {
+        static let dayNumberFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.dateFormat = "d"
             return formatter
         }()
 
-        private static let monthFormatter: DateFormatter = {
+        static let monthFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.dateFormat = "MMM"
             return formatter
         }()
 
-        private static let weekdayFormatter: DateFormatter = {
+        static let weekdayFormatter: DateFormatter = {
             let formatter = DateFormatter()
             formatter.dateFormat = "EEE"
             return formatter
         }()
+    }
+
+    struct SessionDayGroup: Identifiable, Equatable {
+        let date: Date
+        let sessions: [SessionIndex]
+
+        var id: Date { date }
+
+        var sectionTitle: String {
+            UpcomingCalendarGrouping.sectionTitle(for: date)
+        }
     }
 
     static func groups(
@@ -1059,5 +1277,189 @@ enum UpcomingCalendarGrouping {
                     .sorted { $0.startDate < $1.startDate }
             )
         }
+    }
+
+    static func groups(
+        for sessions: [SessionIndex],
+        calendar: Calendar = .current
+    ) -> [SessionDayGroup] {
+        let grouped = Dictionary(grouping: sessions) { session in
+            calendar.startOfDay(for: session.startedAt)
+        }
+
+        return grouped.keys.sorted(by: >).map { day in
+            SessionDayGroup(
+                date: day,
+                sessions: grouped[day, default: []]
+                    .sorted { lhs, rhs in
+                        if lhs.startedAt != rhs.startedAt {
+                            return lhs.startedAt > rhs.startedAt
+                        }
+                        return lhs.id > rhs.id
+                    }
+            )
+        }
+    }
+
+    static func sectionTitle(for date: Date, calendar: Calendar = .current) -> String {
+        if calendar.isDateInToday(date) {
+            return "Today"
+        }
+        if calendar.isDateInTomorrow(date) {
+            return "Tomorrow"
+        }
+        return "\(DayGroup.weekdayFormatter.string(from: date)), \(DayGroup.dayNumberFormatter.string(from: date)) \(DayGroup.monthFormatter.string(from: date))"
+    }
+}
+
+enum IdleDashboardHistorySelection {
+    static func select(
+        from sessionHistory: [SessionIndex],
+        referenceDate: Date = Date(),
+        calendar: Calendar = .current,
+        limit: Int = 30
+    ) -> [SessionIndex] {
+        guard limit > 0 else { return [] }
+
+        let startOfToday = calendar.startOfDay(for: referenceDate)
+        return sessionHistory
+            .filter { $0.startedAt < startOfToday }
+            .sorted { lhs, rhs in
+                if lhs.startedAt != rhs.startedAt {
+                    return lhs.startedAt > rhs.startedAt
+                }
+                return lhs.id > rhs.id
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+}
+
+struct IdleDashboardHistoryAvailability: Equatable {
+    let matchingSessionCount: Int
+    let transcriptableSessionCount: Int
+    let notesCount: Int
+
+    var hasTranscriptableHistory: Bool {
+        transcriptableSessionCount > 0
+    }
+
+    var badgeText: String {
+        transcriptableSessionCount == 1 ? "1 saved" : "\(transcriptableSessionCount) saved"
+    }
+
+    var helpText: String {
+        var components: [String] = []
+        let savedNoun = transcriptableSessionCount == 1 ? "saved meeting" : "saved meetings"
+        components.append("\(transcriptableSessionCount) \(savedNoun) already have transcript or notes history")
+
+        if notesCount > 0 {
+            let notesNoun = notesCount == 1 ? "meeting has notes" : "meetings have notes"
+            components.append("\(notesCount) \(notesNoun)")
+        }
+
+        let unmatchedCount = matchingSessionCount - transcriptableSessionCount
+        if unmatchedCount > 0 {
+            let unmatchedNoun = unmatchedCount == 1 ? "saved session is still empty" : "saved sessions are still empty"
+            components.append("\(unmatchedCount) \(unmatchedNoun)")
+        }
+
+        return components.joined(separator: ". ") + "."
+    }
+
+    static func summary(
+        for event: CalendarEvent,
+        sessionHistory: [SessionIndex],
+        aliases: [String: String]
+    ) -> IdleDashboardHistoryAvailability {
+        let matchingSessions = MeetingHistoryResolver.matchingSessions(
+            for: event,
+            sessionHistory: sessionHistory,
+            aliases: aliases
+        )
+        let transcriptableSessions = matchingSessions.filter(isTranscriptable)
+        return IdleDashboardHistoryAvailability(
+            matchingSessionCount: matchingSessions.count,
+            transcriptableSessionCount: transcriptableSessions.count,
+            notesCount: transcriptableSessions.filter(\.hasNotes).count
+        )
+    }
+
+    static func transcriptStatusText(for session: SessionIndex) -> String {
+        if session.utteranceCount > 0 {
+            return "\(session.utteranceCount) utterances"
+        }
+        if session.hasNotes {
+            return "Notes only"
+        }
+        return session.transcriptIssue?.listLabel ?? "No transcript"
+    }
+
+    static func statusBadge(for session: SessionIndex) -> SessionStatusBadge {
+        if session.utteranceCount > 0, session.hasNotes {
+            return SessionStatusBadge(
+                text: "Transcript + notes",
+                systemImage: "doc.text.fill",
+                tint: .accentColor
+            )
+        }
+        if session.utteranceCount > 0 {
+            return SessionStatusBadge(
+                text: "Transcript",
+                systemImage: "text.quote",
+                tint: .accentColor
+            )
+        }
+        if session.hasNotes {
+            return SessionStatusBadge(
+                text: "Notes",
+                systemImage: "doc.text.fill",
+                tint: .accentColor
+            )
+        }
+        return SessionStatusBadge(
+            text: "No transcript",
+            systemImage: "exclamationmark.triangle.fill",
+            tint: .orange
+        )
+    }
+
+    private static func isTranscriptable(_ session: SessionIndex) -> Bool {
+        session.utteranceCount > 0 || session.hasNotes
+    }
+
+    struct SessionStatusBadge {
+        let text: String
+        let systemImage: String
+        let tint: Color
+    }
+}
+
+enum IdleDashboardNavigationTarget: Equatable {
+    case session(String)
+    case meetingHistory(CalendarEvent)
+    case manualTranscript(CalendarEvent)
+}
+
+enum IdleDashboardNavigationResolver {
+    static func target(
+        for event: CalendarEvent,
+        sessionHistory: [SessionIndex],
+        aliases: [String: String],
+        now: Date = Date()
+    ) -> IdleDashboardNavigationTarget {
+        guard event.endDate <= now else {
+            return .meetingHistory(event)
+        }
+
+        let availability = IdleDashboardHistoryAvailability.summary(
+            for: event,
+            sessionHistory: sessionHistory,
+            aliases: aliases
+        )
+        if availability.hasTranscriptableHistory {
+            return .meetingHistory(event)
+        }
+        return .manualTranscript(event)
     }
 }

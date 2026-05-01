@@ -34,13 +34,14 @@ final class ExternalCommandTests: XCTestCase {
         let coordinator = AppCoordinator()
         coordinator.queueSessionSelection("session_abc")
         XCTAssertEqual(coordinator.requestedNotesNavigation?.target, .session("session_abc"))
+        XCTAssertEqual(coordinator.requestedNotesNavigation?.consumer, .mainWindow)
     }
 
     func testConsumeRequestedSessionSelectionClearsAfterRead() {
         let coordinator = AppCoordinator()
         coordinator.queueSessionSelection("session_abc")
 
-        let consumed = coordinator.consumeRequestedSessionSelection()
+        let consumed = coordinator.consumeRequestedSessionSelection(for: .mainWindow)
         XCTAssertEqual(consumed, .session("session_abc"))
         XCTAssertNil(coordinator.requestedNotesNavigation)
     }
@@ -50,6 +51,19 @@ final class ExternalCommandTests: XCTestCase {
         coordinator.queueSessionSelection(nil)
 
         XCTAssertEqual(coordinator.requestedNotesNavigation?.target, .clearSelection)
+        XCTAssertEqual(coordinator.requestedNotesNavigation?.consumer, .mainWindow)
+    }
+
+    func testStandaloneNavigationRequestsAreNotConsumedByMainWindow() {
+        let coordinator = AppCoordinator()
+        coordinator.queueSessionSelection("session_abc", consumer: .standaloneWindow)
+
+        XCTAssertNil(coordinator.consumeRequestedSessionSelection(for: .mainWindow))
+        XCTAssertEqual(
+            coordinator.consumeRequestedSessionSelection(for: .standaloneWindow),
+            .session("session_abc")
+        )
+        XCTAssertNil(coordinator.requestedNotesNavigation)
     }
 
     func testQueueMeetingHistoryRequestsHistoryTarget() {
@@ -68,6 +82,50 @@ final class ExternalCommandTests: XCTestCase {
         coordinator.queueMeetingHistory(event)
 
         XCTAssertEqual(coordinator.requestedNotesNavigation?.target, .meetingHistory(event))
+        XCTAssertEqual(coordinator.requestedNotesNavigation?.consumer, .mainWindow)
+    }
+
+    func testSelectMainWindowMeetingFamilyStoresBrowserSelection() {
+        let coordinator = AppCoordinator()
+        let event = CalendarEvent(
+            id: "evt",
+            title: "Payment Ops",
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            endDate: Date(timeIntervalSince1970: 1_700_000_900),
+            organizer: nil,
+            participants: [],
+            isOnlineMeeting: false,
+            meetingURL: nil
+        )
+
+        coordinator.selectMainWindowMeetingFamily(event)
+
+        XCTAssertEqual(
+            coordinator.mainWindowBrowserSelection,
+            AppCoordinator.MainWindowBrowserSelection(target: .meetingFamily(event))
+        )
+        XCTAssertEqual(coordinator.mainWindowBrowserSelection?.calendarEventID, "evt")
+    }
+
+    func testSelectMainWindowSessionStoresBrowserSelection() {
+        let coordinator = AppCoordinator()
+
+        coordinator.selectMainWindowSession("session_abc")
+
+        XCTAssertEqual(
+            coordinator.mainWindowBrowserSelection,
+            AppCoordinator.MainWindowBrowserSelection(target: .session("session_abc"))
+        )
+        XCTAssertEqual(coordinator.mainWindowBrowserSelection?.stableID, "session:session_abc")
+    }
+
+    func testCollapseMainWindowBrowserClearsSelection() {
+        let coordinator = AppCoordinator()
+        coordinator.selectMainWindowSession("session_abc")
+
+        coordinator.collapseMainWindowBrowser()
+
+        XCTAssertNil(coordinator.mainWindowBrowserSelection)
     }
 
     func testQueueExternalStartSessionCanCarryMeetingContextAndScratchpad() {
@@ -93,7 +151,7 @@ final class ExternalCommandTests: XCTestCase {
 
     func testConsumeRequestedSessionSelectionReturnsNilWhenEmpty() {
         let coordinator = AppCoordinator()
-        let consumed = coordinator.consumeRequestedSessionSelection()
+        let consumed = coordinator.consumeRequestedSessionSelection(for: .mainWindow)
         XCTAssertNil(consumed)
     }
 }

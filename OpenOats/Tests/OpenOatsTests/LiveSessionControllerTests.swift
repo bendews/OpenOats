@@ -327,6 +327,7 @@ final class LiveSessionControllerTests: XCTestCase {
         XCTAssertTrue(notesOpened)
         XCTAssertNil(coordinator.pendingExternalCommand)
         XCTAssertEqual(coordinator.requestedNotesNavigation?.target, .session("test_session"))
+        XCTAssertEqual(coordinator.requestedNotesNavigation?.consumer, .mainWindow)
     }
 
     func testExternalStartSessionSeedsCalendarEventAndScratchpad() async {
