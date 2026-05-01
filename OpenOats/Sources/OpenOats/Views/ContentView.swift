@@ -45,6 +45,7 @@ struct ContentView: View {
     @State private var liveSessionController: LiveSessionController?
     @State private var mainWindowNotesController: NotesController?
     @State private var isMainWindowBrowserPresented = false
+    @State private var lastSyncedWindowLayoutPhase: MainWindowLayoutPhase?
     @AppStorage("isTranscriptExpanded") private var isTranscriptExpanded = true
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @State private var showOnboarding = false
@@ -83,25 +84,7 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                     .help("Open the standalone Notes window while recording")
                     .accessibilityIdentifier("app.pastMeetingsButton")
-                } else if isMainWindowBrowserPresented {
-                    Button {
-                        collapseMainWindowBrowser()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 11, weight: .semibold))
-                            Text("Timeline")
-                                .font(.system(size: 11))
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Return to the compact timeline")
-                    .accessibilityIdentifier("app.timelineButton")
-                } else {
+                } else if !isMainWindowBrowserPresented {
                     Button {
                         coordinator.queueSessionSelection(nil)
                         previewMainWindowNavigationIfNeeded()
@@ -342,28 +325,33 @@ struct ContentView: View {
 
     @ViewBuilder
     private var idleHomeShell: some View {
-        if isMainWindowBrowserPresented {
-            HSplitView {
-                IdleHomeDashboardView(
-                    settings: settings,
-                    selectedTimelineSelection: coordinator.mainWindowBrowserSelection,
-                    onSelectTimelineEvent: selectTimelineEvent,
-                    onSelectSavedSession: selectSavedSession
-                )
-                .frame(minWidth: 300, idealWidth: 340, maxWidth: 420, maxHeight: .infinity, alignment: .topLeading)
-
-                mainWindowBrowserDetailPane
-                    .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-        } else {
+        HSplitView {
             IdleHomeDashboardView(
                 settings: settings,
-                selectedTimelineSelection: nil,
+                selectedTimelineSelection: isMainWindowBrowserPresented ? coordinator.mainWindowBrowserSelection : nil,
                 onSelectTimelineEvent: selectTimelineEvent,
                 onSelectSavedSession: selectSavedSession
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(
+                minWidth: isMainWindowBrowserPresented ? OpenOatsRootApp.timelinePaneMinWidth : nil,
+                idealWidth: isMainWindowBrowserPresented ? OpenOatsRootApp.timelinePaneIdealWidth : nil,
+                maxWidth: isMainWindowBrowserPresented ? OpenOatsRootApp.timelinePaneMaxWidth : .infinity,
+                maxHeight: .infinity,
+                alignment: .topLeading
+            )
+
+            if isMainWindowBrowserPresented {
+                mainWindowBrowserDetailPane
+                    .frame(
+                        minWidth: OpenOatsRootApp.detailPaneMinWidth,
+                        maxWidth: .infinity,
+                        maxHeight: .infinity,
+                        alignment: .topLeading
+                    )
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
+        .animation(.snappy(duration: 0.24, extraBounce: 0), value: isMainWindowBrowserPresented)
     }
 
     private var mainWindowBrowserDetailPane: some View {
@@ -492,10 +480,18 @@ struct ContentView: View {
     private var contentWithLifecycle: some View {
         contentWithOverlay
         .onAppear {
-            syncMainWindowLayout(windowLayoutPhase)
+            scheduleMainWindowLayoutSync(windowLayoutPhase)
         }
         .onChange(of: windowLayoutPhase) { _, phase in
-            syncMainWindowLayout(phase)
+            scheduleMainWindowLayoutSync(phase)
+        }
+        .onChange(of: coordinator.mainWindowBrowserSelection?.stableID) { _, _ in
+            guard isMainWindowBrowserPresented else { return }
+            scheduleMainWindowLayoutSync(windowLayoutPhase)
+        }
+        .onChange(of: mainWindowBrowserLayoutSignature) { _, _ in
+            guard isMainWindowBrowserPresented else { return }
+            scheduleMainWindowLayoutSync(windowLayoutPhase)
         }
         .onChange(of: showOnboarding) { _, isShowing in
             if !isShowing {
@@ -640,6 +636,36 @@ struct ContentView: View {
         return isMainWindowBrowserPresented ? .expandedTimeline : .compactTimeline
     }
 
+    private var mainWindowBrowserLayoutSignature: String {
+        guard let controller = mainWindowNotesController else {
+            return "unloaded"
+        }
+
+        let state = controller.state
+        let cleanupToken: String
+        switch state.cleanupStatus {
+        case .idle:
+            cleanupToken = state.loadedTranscript.contains(where: { $0.cleanedText != nil }) ? "cleaned" : "idle"
+        case .inProgress(let completed, let total):
+            cleanupToken = "in-progress-\(completed)-of-\(total)"
+        case .completed:
+            cleanupToken = "completed"
+        case .error(let message):
+            cleanupToken = "error-\(message)"
+        }
+
+        return [
+            state.selectedMeetingFamily?.key ?? "no-family",
+            state.selectedSessionID ?? "no-session",
+            state.loadedTranscript.isEmpty ? "no-transcript" : "transcript",
+            state.loadedNotes == nil ? "no-notes" : "notes",
+            state.availableAudioSources.isEmpty ? "no-audio" : "audio",
+            state.canRetranscribeSelectedSession ? "retranscribe" : "no-retranscribe",
+            state.hasOriginalTranscriptBackup ? "has-backup" : "no-backup",
+            cleanupToken,
+        ].joined(separator: "|")
+    }
+
     @MainActor
     private func ensureMainWindowNotesControllerLoaded() async {
         guard mainWindowNotesController == nil else { return }
@@ -649,26 +675,41 @@ struct ContentView: View {
     }
 
     @MainActor
+    private func scheduleMainWindowLayoutSync(_ phase: MainWindowLayoutPhase) {
+        Task { @MainActor in
+            await Task.yield()
+            syncMainWindowLayout(phase)
+        }
+    }
+
+    @MainActor
     private func syncMainWindowLayout(_ phase: MainWindowLayoutPhase) {
         guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == OpenOatsRootApp.mainWindowID }) else {
             return
         }
 
+        let priorPhase = lastSyncedWindowLayoutPhase
+        defer {
+            lastSyncedWindowLayoutPhase = phase
+        }
+
         let metrics = phase.metrics
-        window.contentMinSize = metrics.minSize
+        let minimumWidth = resolvedMinimumWindowWidth(for: window, phase: phase, fallback: metrics.minSize.width)
+
+        window.contentMinSize = NSSize(width: minimumWidth, height: metrics.minSize.height)
         window.contentMaxSize = metrics.maxSize
 
         let currentSize = window.contentLayoutRect.size
         let targetWidth: CGFloat
         switch phase {
         case .expandedTimeline:
-            targetWidth = max(currentSize.width, metrics.idealSize.width)
+            targetWidth = max(currentSize.width, minimumWidth)
         case .compactTimeline, .liveSession:
             targetWidth = min(currentSize.width, metrics.idealSize.width)
         }
 
         let targetSize = NSSize(
-            width: min(max(targetWidth, metrics.minSize.width), metrics.maxSize.width),
+            width: min(max(targetWidth, minimumWidth), metrics.maxSize.width),
             height: min(max(currentSize.height, metrics.minSize.height), metrics.maxSize.height)
         )
 
@@ -677,18 +718,62 @@ struct ContentView: View {
             return
         }
 
-        window.setContentSize(targetSize)
+        let shouldAnimateResize = priorPhase != nil && priorPhase != phase
+        applyMainWindowContentSize(targetSize, to: window, animated: shouldAnimateResize)
+    }
+
+    @MainActor
+    private func applyMainWindowContentSize(
+        _ targetSize: NSSize,
+        to window: NSWindow,
+        animated: Bool
+    ) {
+        if !animated {
+            window.setContentSize(targetSize)
+            return
+        }
+
+        let currentFrame = window.frame
+        var targetFrame = window.frameRect(forContentRect: NSRect(origin: .zero, size: targetSize))
+        targetFrame.origin.x = currentFrame.origin.x
+        targetFrame.origin.y = currentFrame.maxY - targetFrame.height
+        window.setFrame(targetFrame, display: true, animate: true)
+    }
+
+    @MainActor
+    private func resolvedMinimumWindowWidth(
+        for window: NSWindow,
+        phase: MainWindowLayoutPhase,
+        fallback: CGFloat
+    ) -> CGFloat {
+        guard phase == .expandedTimeline,
+              let contentView = window.contentViewController?.view ?? window.contentView else {
+            return fallback
+        }
+
+        contentView.layoutSubtreeIfNeeded()
+
+        let fittingWidth = contentView.fittingSize.width
+        guard fittingWidth.isFinite, fittingWidth > 0 else {
+            return fallback
+        }
+
+        return min(max(fallback, fittingWidth), phase.metrics.maxSize.width)
     }
 
     @MainActor
     private func presentMainWindowBrowser() {
-        isMainWindowBrowserPresented = true
+        withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
+            isMainWindowBrowserPresented = true
+        }
         focusMainWindow()
     }
 
     @MainActor
     private func collapseMainWindowBrowser() {
-        isMainWindowBrowserPresented = false
+        withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
+            isMainWindowBrowserPresented = false
+        }
         coordinator.collapseMainWindowBrowser()
         mainWindowNotesController?.selectSession(nil)
     }

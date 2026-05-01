@@ -12,8 +12,8 @@ struct IdleHomeDashboardView: View {
 
     @State private var events: [CalendarEvent] = []
     @State private var earlierTodayEvents: [CalendarEvent] = []
-    @State private var showsEarlierToday = false
     @State private var refreshTick = 0
+    @State private var hasPositionedInitialTimelineViewport = false
     @State private var creatingFolderEvent: CalendarEvent?
     @State private var pendingMeetingFamilyFolderChange: PendingMeetingFamilyFolderChange?
     @State private var newFolderPath = ""
@@ -88,15 +88,17 @@ struct IdleHomeDashboardView: View {
     @ViewBuilder
     private func comingUpCard(accessState: CalendarManager.AccessState) -> some View {
         let savedHistoryGroups = UpcomingCalendarGrouping.groups(for: savedHistorySessions)
+        let hasPastTimelineContent = !savedHistoryGroups.isEmpty || !earlierTodayEvents.isEmpty
 
         Group {
-            if savedHistoryGroups.isEmpty {
-                calendarTimelineSection(accessState: accessState)
-            } else {
+            if hasPastTimelineContent {
                 timelineScrollContent(
                     accessState: accessState,
+                    earlierTodayEvents: earlierTodayEvents,
                     savedHistoryGroups: savedHistoryGroups
                 )
+            } else {
+                calendarTimelineSection(accessState: accessState)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -118,21 +120,51 @@ struct IdleHomeDashboardView: View {
         )
     }
 
+    private static let currentTimelineViewportAnchor = "idle-home.current-timeline-viewport"
+
+    private func initialTimelineViewportTaskID(
+        earlierTodayEvents: [CalendarEvent],
+        savedHistoryGroups: [UpcomingCalendarGrouping.SessionDayGroup]
+    ) -> [String] {
+        earlierTodayEvents.map { "event:\($0.id)" }
+            + savedHistoryGroups.map { "session-day:\($0.id.timeIntervalSince1970)" }
+    }
+
     private func timelineScrollContent(
         accessState: CalendarManager.AccessState,
+        earlierTodayEvents: [CalendarEvent],
         savedHistoryGroups: [UpcomingCalendarGrouping.SessionDayGroup]
     ) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                calendarTimelineSection(accessState: accessState)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    pastMeetingsSection(
+                        earlierTodayEvents: earlierTodayEvents,
+                        savedHistoryGroups: savedHistoryGroups
+                    )
 
-                Divider()
+                    Divider()
 
-                savedMeetingHistorySection(groups: savedHistoryGroups)
+                    calendarTimelineSection(accessState: accessState)
+                        .id(Self.currentTimelineViewportAnchor)
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .scrollIndicators(.visible)
+            .task(id: initialTimelineViewportTaskID(
+                earlierTodayEvents: earlierTodayEvents,
+                savedHistoryGroups: savedHistoryGroups
+            )) {
+                guard !earlierTodayEvents.isEmpty || !savedHistoryGroups.isEmpty else {
+                    hasPositionedInitialTimelineViewport = false
+                    return
+                }
+                guard !hasPositionedInitialTimelineViewport else { return }
+                await Task.yield()
+                proxy.scrollTo(Self.currentTimelineViewportAnchor, anchor: .top)
+                hasPositionedInitialTimelineViewport = true
+            }
         }
-        .scrollIndicators(.visible)
     }
 
     @ViewBuilder
@@ -142,7 +174,7 @@ struct IdleHomeDashboardView: View {
         } else {
             switch accessState {
             case .authorized:
-                if events.isEmpty && earlierTodayEvents.isEmpty {
+                if events.isEmpty {
                     emptyStateCard(
                         title: "No upcoming meetings",
                         description: "OpenOats will show your next calendar meetings here."
@@ -197,29 +229,24 @@ struct IdleHomeDashboardView: View {
     }
 
     private var upcomingMeetingsCard: some View {
-        let groups = ComingUpDayGroupSelection.groups(
-            for: events,
-            earlierTodayEvents: earlierTodayEvents
-        )
+        let sections = UpcomingTimelineSectionSelection.sections(for: events)
         let shouldShowCalendarTitle = UpcomingEventSelection.distinctCalendarCount(in: events) > 1
 
         return VStack(alignment: .leading, spacing: 14) {
-            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+            ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                 ComingUpDayGroupView(
-                    group: group,
+                    title: section.title,
+                    events: section.events,
                     showCalendarTitle: shouldShowCalendarTitle,
                     settings: settings,
                     sessionHistory: coordinator.sessionHistory,
                     selectedTimelineSelection: selectedTimelineSelection,
-                    earlierTodayEvents: Calendar.current.isDateInToday(group.date) ? earlierTodayEvents : [],
-                    showsEarlierToday: Calendar.current.isDateInToday(group.date) ? showsEarlierToday : false,
-                    onToggleEarlierToday: { showsEarlierToday.toggle() },
                     onJoinEvent: joinMeeting(for:),
                     onSelectTimelineEvent: onSelectTimelineEvent,
                     onRequestMeetingFamilyFolderChange: requestMeetingFamilyFolderChange(_:for:),
                     onCreateFolder: beginCreateFolder(for:)
                 )
-                if index < groups.count - 1 {
+                if index < sections.count - 1 {
                     Divider()
                         .padding(.top, 2)
                 }
@@ -227,16 +254,19 @@ struct IdleHomeDashboardView: View {
         }
     }
 
-    private func savedMeetingHistorySection(
-        groups: [UpcomingCalendarGrouping.SessionDayGroup]
+    private func pastMeetingsSection(
+        earlierTodayEvents: [CalendarEvent],
+        savedHistoryGroups: [UpcomingCalendarGrouping.SessionDayGroup]
     ) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Saved history")
+        let shouldShowCalendarTitle = UpcomingEventSelection.distinctCalendarCount(in: earlierTodayEvents) > 1
+
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("Past meetings")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
-            ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+            ForEach(Array(savedHistoryGroups.enumerated()), id: \.element.id) { index, group in
                 VStack(alignment: .leading, spacing: 10) {
                     Text(group.sectionTitle)
                         .font(.system(size: 12, weight: .semibold))
@@ -260,9 +290,35 @@ struct IdleHomeDashboardView: View {
                     }
                 }
 
-                if index < groups.count - 1 {
+                if index < savedHistoryGroups.count - 1 || !earlierTodayEvents.isEmpty {
                     Divider()
                         .padding(.top, 2)
+                }
+            }
+
+            if !earlierTodayEvents.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Earlier today")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(earlierTodayEvents) { event in
+                            ComingUpEventRow(
+                                event: event,
+                                showJoinButton: false,
+                                showCalendarTitle: shouldShowCalendarTitle,
+                                settings: settings,
+                                sessionHistory: coordinator.sessionHistory,
+                                isSelected: selectedTimelineSelection?.calendarEventID == event.id,
+                                onJoinEvent: joinMeeting(for:),
+                                onSelectTimelineEvent: onSelectTimelineEvent,
+                                onRequestMeetingFamilyFolderChange: requestMeetingFamilyFolderChange(_:for:),
+                                onCreateFolder: beginCreateFolder(for:)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -323,9 +379,6 @@ struct IdleHomeDashboardView: View {
             now: now,
             currentEventID: currentEvent?.id
         )
-        if earlierTodayEvents.isEmpty {
-            showsEarlierToday = false
-        }
     }
 
     private var currentAccessState: CalendarManager.AccessState {
@@ -601,14 +654,12 @@ struct IdleHomeDashboardView: View {
 }
 
 private struct ComingUpDayGroupView: View {
-    let group: UpcomingCalendarGrouping.DayGroup
+    let title: String
+    let events: [CalendarEvent]
     let showCalendarTitle: Bool
     let settings: AppSettings
     let sessionHistory: [SessionIndex]
     let selectedTimelineSelection: AppCoordinator.MainWindowBrowserSelection?
-    let earlierTodayEvents: [CalendarEvent]
-    let showsEarlierToday: Bool
-    let onToggleEarlierToday: () -> Void
     let onJoinEvent: (CalendarEvent) -> Void
     let onSelectTimelineEvent: (CalendarEvent) -> Void
     let onRequestMeetingFamilyFolderChange: (String?, CalendarEvent) -> Void
@@ -616,17 +667,13 @@ private struct ComingUpDayGroupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(group.sectionTitle)
+            Text(title)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
             VStack(alignment: .leading, spacing: 10) {
-                if !earlierTodayEvents.isEmpty {
-                    earlierTodayDisclosure
-                }
-
-                ForEach(group.events) { event in
+                ForEach(events) { event in
                     ComingUpEventRow(
                         event: event,
                         showJoinButton: true,
@@ -642,75 +689,6 @@ private struct ComingUpDayGroupView: View {
                 }
             }
         }
-    }
-
-    @ViewBuilder
-    private var earlierTodayDisclosure: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.18))
-                    .frame(height: 1)
-
-                Button(action: onToggleEarlierToday) {
-                    HStack(spacing: 5) {
-                        Image(systemName: showsEarlierToday ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Earlier today")
-                        Text("\(earlierTodayEvents.count)")
-                            .foregroundStyle(.tertiary)
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule()
-                            .fill(Color.primary.opacity(0.04))
-                    )
-                }
-                .buttonStyle(.plain)
-
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.18))
-                    .frame(height: 1)
-            }
-
-            if showsEarlierToday {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(earlierTodayEvents) { event in
-                        ComingUpEventRow(
-                            event: event,
-                            showJoinButton: false,
-                            showCalendarTitle: showCalendarTitle,
-                            settings: settings,
-                            sessionHistory: sessionHistory,
-                            isSelected: selectedTimelineSelection?.calendarEventID == event.id,
-                            onJoinEvent: onJoinEvent,
-                            onSelectTimelineEvent: onSelectTimelineEvent,
-                            onRequestMeetingFamilyFolderChange: onRequestMeetingFamilyFolderChange,
-                            onCreateFolder: onCreateFolder
-                        )
-                    }
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-
-                if !group.events.isEmpty {
-                    DashedSeparator()
-                }
-            }
-        }
-        .padding(.top, 2)
-    }
-}
-
-private struct DashedSeparator: View {
-    var body: some View {
-        Rectangle()
-            .stroke(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-            .foregroundStyle(Color.secondary.opacity(0.24))
-            .frame(height: 1)
-            .padding(.vertical, 2)
     }
 }
 
@@ -1187,25 +1165,60 @@ enum EarlierTodaySelection {
     }
 }
 
-enum ComingUpDayGroupSelection {
-    static func groups(
-        for upcomingEvents: [CalendarEvent],
-        earlierTodayEvents: [CalendarEvent],
-        referenceDate: Date = Date(),
+enum UpcomingTimelineSectionSelection {
+    struct Section: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let events: [CalendarEvent]
+    }
+
+    static func sections(
+        for events: [CalendarEvent],
+        now: Date = Date(),
         calendar: Calendar = .current
-    ) -> [UpcomingCalendarGrouping.DayGroup] {
-        var groups = UpcomingCalendarGrouping.groups(for: upcomingEvents, calendar: calendar)
-        guard !earlierTodayEvents.isEmpty else { return groups }
+    ) -> [Section] {
+        let sortedEvents = events.sorted { lhs, rhs in
+            if lhs.startDate != rhs.startDate {
+                return lhs.startDate < rhs.startDate
+            }
+            return lhs.id < rhs.id
+        }
 
-        let today = calendar.startOfDay(for: referenceDate)
-        let hasTodayGroup = groups.contains { calendar.isDate($0.date, inSameDayAs: today) }
-        guard !hasTodayGroup else { return groups }
+        let currentEvents = sortedEvents.filter { event in
+            event.startDate <= now && event.endDate > now
+        }
+        let futureEvents = sortedEvents.filter { event in
+            event.startDate > now
+        }
 
-        groups.insert(
-            UpcomingCalendarGrouping.DayGroup(date: today, events: []),
-            at: 0
-        )
-        return groups
+        var sections: [Section] = []
+        if !currentEvents.isEmpty {
+            sections.append(Section(id: "now", title: "Now", events: currentEvents))
+        }
+
+        let groupedFutureEvents = Dictionary(grouping: futureEvents) { event in
+            calendar.startOfDay(for: event.startDate)
+        }
+
+        for day in groupedFutureEvents.keys.sorted() {
+            sections.append(
+                Section(
+                    id: "day-\(day.timeIntervalSince1970)",
+                    title: calendar.isDateInToday(day)
+                        ? "Later today"
+                        : UpcomingCalendarGrouping.sectionTitle(for: day, calendar: calendar),
+                    events: groupedFutureEvents[day, default: []]
+                        .sorted { lhs, rhs in
+                            if lhs.startDate != rhs.startDate {
+                                return lhs.startDate < rhs.startDate
+                            }
+                            return lhs.id < rhs.id
+                        }
+                )
+            )
+        }
+
+        return sections
     }
 }
 
@@ -1287,15 +1300,15 @@ enum UpcomingCalendarGrouping {
             calendar.startOfDay(for: session.startedAt)
         }
 
-        return grouped.keys.sorted(by: >).map { day in
+        return grouped.keys.sorted().map { day in
             SessionDayGroup(
                 date: day,
                 sessions: grouped[day, default: []]
                     .sorted { lhs, rhs in
                         if lhs.startedAt != rhs.startedAt {
-                            return lhs.startedAt > rhs.startedAt
+                            return lhs.startedAt < rhs.startedAt
                         }
-                        return lhs.id > rhs.id
+                        return lhs.id < rhs.id
                     }
             )
         }
@@ -1316,22 +1329,17 @@ enum IdleDashboardHistorySelection {
     static func select(
         from sessionHistory: [SessionIndex],
         referenceDate: Date = Date(),
-        calendar: Calendar = .current,
-        limit: Int = 30
+        calendar: Calendar = .current
     ) -> [SessionIndex] {
-        guard limit > 0 else { return [] }
-
         let startOfToday = calendar.startOfDay(for: referenceDate)
         return sessionHistory
             .filter { $0.startedAt < startOfToday }
             .sorted { lhs, rhs in
                 if lhs.startedAt != rhs.startedAt {
-                    return lhs.startedAt > rhs.startedAt
+                    return lhs.startedAt < rhs.startedAt
                 }
-                return lhs.id > rhs.id
+                return lhs.id < rhs.id
             }
-            .prefix(limit)
-            .map { $0 }
     }
 }
 

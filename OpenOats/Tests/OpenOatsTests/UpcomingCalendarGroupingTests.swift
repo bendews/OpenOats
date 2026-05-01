@@ -238,40 +238,41 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
         XCTAssertEqual(selected.map(\.id), ["newer", "older"])
     }
 
-    func testComingUpGroupsIncludeTodayWhenOnlyEarlierTodayEventsExist() {
+    func testUpcomingSectionsSplitNowFromLaterTodayAndFutureDays() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
 
-        let referenceDate = makeDate(year: 2026, month: 4, day: 24, hour: 17, minute: 0, calendar: calendar)
-        let earlierToday = [
-            makeEvent(
-                id: "ended",
-                title: "Standup",
-                start: makeDate(year: 2026, month: 4, day: 24, hour: 9, minute: 0, calendar: calendar)
-            )
-        ]
-        let future = [
-            makeEvent(
-                id: "future",
-                title: "Planning",
-                start: makeDate(year: 2026, month: 4, day: 27, hour: 11, minute: 30, calendar: calendar)
-            )
-        ]
+        let now = makeDate(year: 2026, month: 4, day: 24, hour: 10, minute: 30, calendar: calendar)
+        let current = makeEvent(
+            id: "current",
+            title: "Current Standup",
+            start: makeDate(year: 2026, month: 4, day: 24, hour: 10, minute: 0, calendar: calendar),
+            duration: 3_600
+        )
+        let laterToday = makeEvent(
+            id: "later-today",
+            title: "Planning",
+            start: makeDate(year: 2026, month: 4, day: 24, hour: 16, minute: 0, calendar: calendar)
+        )
+        let tomorrow = makeEvent(
+            id: "tomorrow",
+            title: "Retro",
+            start: makeDate(year: 2026, month: 4, day: 25, hour: 9, minute: 0, calendar: calendar)
+        )
 
-        let groups = ComingUpDayGroupSelection.groups(
-            for: future,
-            earlierTodayEvents: earlierToday,
-            referenceDate: referenceDate,
+        let sections = UpcomingTimelineSectionSelection.sections(
+            for: [laterToday, tomorrow, current],
+            now: now,
             calendar: calendar
         )
 
-        XCTAssertEqual(groups.count, 2)
-        XCTAssertEqual(groups[0].date, calendar.startOfDay(for: referenceDate))
-        XCTAssertTrue(groups[0].events.isEmpty)
-        XCTAssertEqual(groups[1].events.map(\.id), ["future"])
+        XCTAssertEqual(sections.map(\.title), ["Now", "Later today", "Tomorrow"])
+        XCTAssertEqual(sections[0].events.map(\.id), ["current"])
+        XCTAssertEqual(sections[1].events.map(\.id), ["later-today"])
+        XCTAssertEqual(sections[2].events.map(\.id), ["tomorrow"])
     }
 
-    func testSavedHistorySelectionOmitsTodayAndKeepsNewestSessionsFirst() {
+    func testSavedHistorySelectionOmitsTodayAndKeepsChronologicalOrder() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
 
@@ -306,14 +307,13 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
         let selected = IdleDashboardHistorySelection.select(
             from: sessions,
             referenceDate: referenceDate,
-            calendar: calendar,
-            limit: 10
+            calendar: calendar
         )
 
-        XCTAssertEqual(selected.map(\.id), ["yesterday-late", "yesterday-early", "older"])
+        XCTAssertEqual(selected.map(\.id), ["older", "yesterday-early", "yesterday-late"])
     }
 
-    func testSavedHistoryGroupingSortsDaysAndSessionsNewestFirst() {
+    func testSavedHistoryGroupingSortsDaysAndSessionsChronologically() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
 
@@ -340,7 +340,7 @@ final class UpcomingCalendarGroupingTests: XCTestCase {
 
         let groups = UpcomingCalendarGrouping.groups(for: sessions, calendar: calendar)
 
-        XCTAssertEqual(groups.map { $0.sessions.map(\.id) }, [["same-day-later", "same-day-earlier"], ["older-day"]])
+        XCTAssertEqual(groups.map { $0.sessions.map(\.id) }, [["older-day"], ["same-day-earlier", "same-day-later"]])
     }
 
     func testEndedEventWithUsableHistoryRoutesToMeetingHistory() {

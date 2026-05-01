@@ -140,7 +140,17 @@ extension OpenOatsRootApp {
     static let compactMainWindowMinSize = NSSize(width: 380, height: 540)
     static let compactMainWindowIdealSize = NSSize(width: 420, height: 620)
     static let compactMainWindowMaxSize = NSSize(width: 600, height: 960)
-    static let expandedMainWindowMinSize = NSSize(width: 860, height: 600)
+
+    static let timelinePaneMinWidth: CGFloat = 280
+    static let timelinePaneIdealWidth: CGFloat = 320
+    static let timelinePaneMaxWidth: CGFloat = 360
+    static let detailPaneMinWidth: CGFloat = 520
+    static let mainWindowSplitChromeWidth: CGFloat = 20
+
+    static let expandedMainWindowMinSize = NSSize(
+        width: timelinePaneIdealWidth + detailPaneMinWidth + mainWindowSplitChromeWidth,
+        height: 600
+    )
     static let expandedMainWindowIdealSize = NSSize(width: 980, height: 680)
     static let expandedMainWindowMaxSize = NSSize(width: 1_400, height: 1_100)
 

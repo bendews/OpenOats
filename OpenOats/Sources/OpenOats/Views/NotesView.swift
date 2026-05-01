@@ -1815,7 +1815,7 @@ struct NotesView: View {
             }
 
             ScrollView {
-                VStack(spacing: 10) {
+                LazyVStack(spacing: 10) {
                     ForEach(historyEntries) { entry in
                         Button {
                             openSessionFromMeetingHistory(entry.session, controller: controller)
@@ -1901,10 +1901,14 @@ struct NotesView: View {
                             .contentShape(RoundedRectangle(cornerRadius: 12))
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .help("Open this meeting")
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .defaultScrollAnchor(.topLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
@@ -1969,35 +1973,39 @@ struct NotesView: View {
             }
             .pickerStyle(.segmented)
             .frame(minWidth: 120, maxWidth: 220)
+            .fixedSize(horizontal: true, vertical: false)
             .layoutPriority(1)
 
             Spacer(minLength: 4)
 
-            if detailViewMode == .transcript {
-                transcriptToolbarActions(controller: controller, state: state)
-            } else if detailViewMode == .notes {
-                notesToolbarActions(controller: controller, state: state)
-            }
+            HStack(spacing: 8) {
+                if detailViewMode == .transcript {
+                    transcriptToolbarActions(controller: controller, state: state)
+                } else if detailViewMode == .notes {
+                    notesToolbarActions(controller: controller, state: state)
+                }
 
-            if state.selectedSessionID != nil,
-               (state.canRetranscribeSelectedSession || state.hasOriginalTranscriptBackup) {
-                transcriptMaintenanceMenu(controller: controller, state: state)
-            }
+                if state.selectedSessionID != nil,
+                   (state.canRetranscribeSelectedSession || state.hasOriginalTranscriptBackup) {
+                    transcriptMaintenanceMenu(controller: controller, state: state)
+                }
 
-            if !state.availableAudioSources.isEmpty {
-                audioPlaybackButton(controller: controller, state: state)
-            }
+                if !state.availableAudioSources.isEmpty {
+                    audioPlaybackButton(controller: controller, state: state)
+                }
 
-            Button {
-                copyCurrentContent(state: state)
-            } label: {
-                Label("Copy", systemImage: "doc.on.doc")
-                    .font(.system(size: 12))
+                Button {
+                    copyCurrentContent(state: state)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .font(.system(size: 12))
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.bordered)
+                .disabled(copyContentIsEmpty(state: state))
+                .help("Copy to clipboard")
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.bordered)
-            .disabled(copyContentIsEmpty(state: state))
-            .help("Copy to clipboard")
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
